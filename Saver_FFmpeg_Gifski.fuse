@@ -29,70 +29,49 @@ local RUNNING_IN_FUSION = FuRegisterClass ~= nil
 
 if RUNNING_IN_FUSION then
   FuRegisterClass("Saver_FFMPEG_Gifski", CT_Tool, {
-  REGS_Name             = "Saver_FF_G",
-  REGS_UIName           = "Saver (FFmpeg Gifski)",
-  REGS_Category         = "Tangenten",
-  REGS_OpIconString     = "SVFG",
-  REGS_Keyword          = "Saver",
-  REGS_Company          = "Tangenten",
-  REGS_OpDescription    = "Saves animations using FFmpeg & Gifski",
-  REGS_AboutDescription = "Saves animations using FFmpeg & Gifski",
-  REGS_OpToolTip        = "Saves animations using FFmpeg & Gifski",
-  REGS_IconID           = "Icons.Tools.Icons.CameraTracker",
+    REGS_Name             = "Saver_FF_G",
+    REGS_UIName           = "Saver (FFmpeg Gifski)",
+    REGS_Category         = "Tangenten",
+    REGS_OpIconString     = "SVFG",
+    REGS_Keyword          = "Saver",
+    REGS_Company          = "Tangenten",
+    REGS_OpDescription    = "Saves animations using FFmpeg & Gifski",
+    REGS_AboutDescription = "Saves animations using FFmpeg & Gifski",
+    REGS_OpToolTip        = "Saves animations using FFmpeg & Gifski",
+    REGS_IconID           = "Icons.Tools.Icons.CameraTracker",
 
-	REG_OpNoMask          = true,
-	REG_NoBlendCtrls      = true,
-	REG_NoObjMatCtrls     = true,
-	REG_NoChannelCtrls    = true,
-	REG_NoScriptCtrls     = false,
-	REG_NoMotionBlurCtrls = true,
-	REG_NoCommonCtrls     = true,
-	REG_NoAuxChannels     = true,
-  REG_NoLinkCtrls       = true,
+    REG_OpNoMask          = true,
+    REG_NoBlendCtrls      = true,
+    REG_NoObjMatCtrls     = true,
+    REG_NoChannelCtrls    = true,
+    REG_NoMotionBlurCtrls = true,
+    REG_NoAuxChannels     = true,
+    REG_NoLinkCtrls       = true,
 
-  REG_NoPreCalcProcess  = false,
+    REG_NoScriptCtrls     = false,
+    REG_NoCommonCtrls     = false,
 
-  REG_Fuse_NoReload     = true,
-  REG_Fuse_NoEdit       = true,
-})
+    REG_NoPreCalcProcess  = false,
+
+    REG_Fuse_NoReload     = true,
+    REG_Fuse_NoEdit       = true,
+  })
 end
 
 -- endregion
 
 -- region FFI subprocess & platform layer
 
-local ffi = require("ffi")
-local json = require("dkjson")
+local ffi              = require("ffi")
 
-local PLUGIN_NAME    = "Saver (FFmpeg & Gifski)"
-local PLUGIN_VERSION = "0.8.0"
+local PLUGIN_NAME      = "Saver (FFmpeg & Gifski)"
+local PLUGIN_VERSION   = "1.0.0"
 
 local FUSE_LOG_ENABLED = false
-local FUSE_STARTUP_TESTS_ENABLED = false
 
 local function fuseLog(...)
   if not FUSE_LOG_ENABLED then return end
   print("[FFMPEGSaver]", ...)
-end
-
--- halts execution
-local function fuseError(...)
-  error("[FFMPEGSaver] [ERROR] " .. table.concat({...}, " "), 2)
-end
-
--- Assert a condition; halts with fuseError on failure.
-local function fuseAssert(condition, ...)
-  if not condition then
-    fuseError(...)
-  end
-end
-
-local function decodeJson(jsonText)
-  if not jsonText or type(jsonText) ~= "string" or #jsonText == 0 then
-    return nil, "jsonText is nil or empty"
-  end
-  local decodedValue, _, decodeError = json.decode(jsonText, 1, nil)
-  return decodedValue, decodeError
 end
 
 -- ============================================================================
@@ -104,13 +83,10 @@ local IS_WINDOWS = package.config:sub(1, 1) == "\\"
 -- Platform-specific FFI backends ----
 
 local _K32, _libc
-local _CreatePipe, _CreateProcessA, _CloseHandle, _ReadFile
-local _WaitForSingleObject, _GetExitCodeProcess, _SetHandleInformation, _GetStdHandle
-local _pipe, _fork, _dup2, _c_close, _execl, _c_exit, _c_read, _waitpid
 local _WIFEXITED, _WEXITSTATUS, _WNOHANG
 
 if IS_WINDOWS then
-  ffi.cdef[[
+  ffi.cdef [[
     typedef void* HANDLE;
     typedef unsigned long DWORD;
     typedef int BOOL;
@@ -157,8 +133,8 @@ if IS_WINDOWS then
 
   _K32 = ffi.load("kernel32")
 else
-  ffi.cdef[[
-    typedef unsigned int pid_t;
+  ffi.cdef [[
+    typedef int pid_t;
     int pipe(int pipefd[2]);
     pid_t fork(void);
     int dup2(int oldfd, int newfd);
@@ -171,9 +147,9 @@ else
     int mkdir(const char *pathname, unsigned int mode);
   ]]
 
-  _libc = ffi.C
-  _WNOHANG = 1
-  _WIFEXITED  = function(s) return bit.band(s, 0x7f) == 0 end
+  _libc        = ffi.C
+  _WNOHANG     = 1
+  _WIFEXITED   = function(s) return bit.band(s, 0x7f) == 0 end
   _WEXITSTATUS = function(s) return bit.rshift(bit.band(s, 0xff00), 8) end
 end
 
@@ -192,19 +168,23 @@ local function _spawn(cmd, showTerminal)
       return nil, "CreatePipe failed"
     end
 
-    _K32.SetHandleInformation(hRead[0], 1, 0) -- HANDLE_FLAG_INHERIT
+    if _K32.SetHandleInformation(hRead[0], 1, 0) == 0 then
+      _K32.CloseHandle(hRead[0])
+      _K32.CloseHandle(hWrite[0])
+      return nil, "SetHandleInformation failed"
+    end
 
-    local si = ffi.new("STARTUPINFO")
-    si.cb = ffi.sizeof("STARTUPINFO")
-    si.dwFlags = 0x00000100 -- STARTF_USESTDHANDLES
+    local si      = ffi.new("STARTUPINFO")
+    si.cb         = ffi.sizeof("STARTUPINFO")
+    si.dwFlags    = 0x00000100 -- STARTF_USESTDHANDLES
     si.hStdOutput = hWrite[0]
     si.hStdError  = hWrite[0]
     si.hStdInput  = _K32.GetStdHandle(-10) -- STD_INPUT_HANDLE
 
-    local pi = ffi.new("PROCESS_INFORMATION")
+    local pi      = ffi.new("PROCESS_INFORMATION")
     -- Wrap in cmd /c so built-ins (mkdir, del, rd, if) and shell syntax (2>&1) work.
-    local wrapped = "cmd /c " .. cmd
-    local cmdBuf = ffi.new("char[?]", #wrapped + 1)
+    local wrapped = 'cmd.exe /d /s /v:off /c "' .. cmd .. '"'
+    local cmdBuf  = ffi.new("char[?]", #wrapped + 1)
     ffi.copy(cmdBuf, wrapped)
 
     local flags = showTerminal and 0 or 0x08000000 -- CREATE_NO_WINDOW
@@ -235,7 +215,7 @@ local function _spawn(cmd, showTerminal)
       _libc.dup2(fds[1], 1)
       _libc.dup2(fds[1], 2)
       _libc.close(fds[1])
-      _libc.execl("/bin/sh", "sh", "-c", cmd, nil)
+      _libc.execl("/bin/sh", "sh", "-c", cmd, ffi.cast("char *", nil))
       _libc._exit(127)
     end
 
@@ -255,7 +235,8 @@ local function _childRead(info)
     return ffi.string(buf, nread[0])
   else
     local buf = ffi.new("char[65536]")
-    local n = _libc.read(info.handle, buf, 65536)
+    local n
+    repeat n = _libc.read(info.handle, buf, 65536) until n >= 0 or ffi.errno() ~= 4
     if n <= 0 then return nil end
     return ffi.string(buf, n)
   end
@@ -269,16 +250,17 @@ local function _childWait(info, blocking)
     local r = _K32.WaitForSingleObject(info.proc, ms)
     if r == 0x00000102 then return nil end -- WAIT_TIMEOUT
     local code = ffi.new("DWORD[1]")
-    _K32.GetExitCodeProcess(info.proc, code)
+    if r ~= 0 or _K32.GetExitCodeProcess(info.proc, code) == 0 then return -1 end
     return code[0]
   else
     local status = ffi.new("int[1]")
     local opts = blocking and 0 or _WNOHANG
-    local r = _libc.waitpid(info.proc, status, opts)
+    local r
+    repeat r = _libc.waitpid(info.proc, status, opts) until r >= 0 or ffi.errno() ~= 4
     if r == 0 then return nil end
     if r < 0 then
       fuseLog("[_childWait] waitpid error for pid", info.proc)
-      return nil
+      return -1
     end
     if _WIFEXITED(status[0]) then return _WEXITSTATUS(status[0]) end
     local sig = bit.band(status[0], 0x7f)
@@ -298,190 +280,25 @@ local function _childCleanup(info)
   end
 end
 
--- ============================================================================
--- Pipe I/O object (wraps platform process handles)
--- ============================================================================
-
-local PIPE = {}
-PIPE.__index = PIPE
-
-function PIPE:read(format)
-  if format == "*a" then
-    local parts = {}
-    if #self._buf > 0 then
-      parts[1] = self._buf
-      self._buf = ""
-    end
-    while true do
-      local chunk = _childRead(self._info)
-      if not chunk then break end
-      parts[#parts + 1] = chunk
-    end
-    if #parts > 0 then return table.concat(parts) end
-    return nil
-  elseif format == "*l" then
-    while true do
-      local nl = self._buf:find("\n", 1, true)
-      if nl then
-        local line = self._buf:sub(1, nl - 1)
-        if line:sub(-1) == "\r" then line = line:sub(1, -2) end
-        self._buf = self._buf:sub(nl + 1)
-        return line
-      end
-      local chunk = _childRead(self._info)
-      if not chunk then
-        if #self._buf > 0 then
-          local line = self._buf
-          self._buf = ""
-          return line
-        end
-        return nil
-      end
-      self._buf = self._buf .. chunk
-    end
-  elseif type(format) == "number" and format > 0 then
-    while #self._buf < format do
-      local chunk = _childRead(self._info)
-      if not chunk then break end
-      self._buf = self._buf .. chunk
-    end
-    if #self._buf == 0 then return nil end
-    local n = math.min(format, #self._buf)
-    local result = self._buf:sub(1, n)
-    self._buf = self._buf:sub(n + 1)
-    return result
-  end
-  return nil
-end
-
-function PIPE:wait()
-  if self._exitCode ~= nil then return self._exitCode end
-  self._exitCode = _childWait(self._info, true) -- blocking
-  return self._exitCode
-end
-
-function PIPE:close()
-  if self._closed then return end
-  self._closed = true
-  if self._exitCode == nil then
-    self:wait()
-  end
-  _childCleanup(self._info)
-end
-
-function PIPE:lines()
-  local p = self
-  return function()
-    return p:read("*l")
-  end
-end
-
--- The eof property: true when process exited AND all output consumed.
--- Used by RunPerLineBlocking to know when to call on_done.
-function PIPE:iseof()
-  if self._buf ~= "" then return false end
-  if self._exitCode ~= nil then return true end
-  -- Check if process exited
-  self._exitCode = _childWait(self._info, false) -- non-blocking poll
-  if self._exitCode ~= nil then return true end
-  return false
-end
-
--- ============================================================================
--- RunCommand: cross-platform subprocess execution
--- ============================================================================
---
--- Usage:
---   local ok, pipe = RunCommand(cmd, opts)
---   if pipe then
---     for line in pipe:lines() do ... end
---     pipe:close()
---   end
---
--- opts:
---   showTerminal = false    Show a terminal window? (Windows: new console; Unix: terminal emulator)
---   blocking     = true     Wait for process to finish before returning?
---
--- Returns: pipe object, or nil, error
-
-local function runProcessCommand(cmd, opts)
-  opts = opts or {}
-  local blocking = (opts.blocking ~= nil) and opts.blocking or true
-
-  local info, err = _spawn(cmd, opts.showTerminal)
-  if not info then return nil, err end
-
-  local p = setmetatable({
-    _info     = info,
-    _buf      = "",
-    _exitCode = nil,
-    _closed   = false,
-  }, PIPE)
-
-  if blocking then p:wait() end
-  return p
-end
-
--- ============================================================================
--- Path & shell utilities
--- ============================================================================
-
-
--- Capture full stdout/stderr, return as string plus exit code.
--- IMPORTANT: spawns with blocking=false, reads pipe FIRST, then waits for exit.
--- This avoids a deadlock when the child writes more than the pipe buffer
--- capacity (64KB on Linux) while the parent blocks on waitpid.
--- Returns (output_string, exit_code) on success, or (nil, nil) on spawn failure.
+-- Drain output before waiting; retain a bounded diagnostic tail.
 local function runCommandFullBlocking(cmd)
-    local pipe, err = runProcessCommand(cmd, {blocking = false})
-    if not pipe then
-      fuseLog("[RunFullBlocking] Failed to spawn: " .. tostring(err) .. " | cmd: " .. cmd)
-      return nil, nil
-    end
-    -- Drain pipe BEFORE waiting — prevents pipe-buffer deadlock.
-    -- read("*a") blocks on read() until EOF (child closes pipe on exit),
-    -- naturally draining the buffer as data arrives.
-    local rawOut = pipe:read("*a")
-    local exitCode = pipe:wait()
-    pipe:close()
-    local out = rawOut or ""
-    local displayOut = #out > 200 and out:sub(1, 200) .. "..." or out
-    if #displayOut == 0 then displayOut = "(empty)" end
-    fuseLog("[RunFullBlocking] exit:", exitCode, "| out:", displayOut, "| cmd:", cmd)
-    return out, exitCode
-end
-
--- Run command, deliver output line-by-line via on_line / on_done callbacks.
--- Returns a step() function: call it until it returns false.
-local function runCommandPerLineBlocking(cmd, on_line, on_done)
-    fuseLog(cmd)
-    local pipe, err = runProcessCommand(cmd, {blocking = false})
-    if not pipe then
-      fuseLog("[RunPerLineBlocking] Failed: " .. tostring(err))
-      if on_done then on_done() end
-      return nil
-    end
-
-    local function step()
-      local line = pipe:read("*l")
-      if line then
-        if on_line then on_line(line) end
-        return true
-      end
-      if pipe:iseof() then
-        pipe:close()
-        if on_done then on_done() end
-        return false
-      end
-      return true
-    end
-
-    return step
+  local info, err = _spawn(cmd, false)
+  if not info then return nil, err end
+  local output = ""
+  while true do
+    local chunk = _childRead(info)
+    if not chunk then break end
+    output = output .. chunk
+    if #output > 262144 then output = output:sub(-131072) end
+  end
+  local exitCode = _childWait(info, true)
+  _childCleanup(info)
+  return output, exitCode
 end
 
 -- Cross-platform path separator
 local function getPathSeparator()
-    return IS_WINDOWS and "\\" or "/"
+  return IS_WINDOWS and "\\" or "/"
 end
 
 -- Compute the number of zero-padded digits needed for frame filenames.
@@ -492,49 +309,21 @@ local function getFrameWidth(maxFrame)
   return math.max(4, math.floor(math.log10(math.max(maxFrame, 1))) + 1)
 end
 
--- Build a frame file path (cross-platform separator).
--- frameWidth: number of zero-padded digits (default 4 for backward compat).
-local function buildFramePath(basePath, frameFolder, frame, sequenceExtension, isPngSequence, frameWidth)
-    frameWidth = frameWidth or 4
-    local fmt = "%s_%0" .. frameWidth .. "d%s"
-    if isPngSequence then
-        return string.format(fmt, basePath, frame, sequenceExtension)
-    end
-    local sep = getPathSeparator()
-    return string.format("%s" .. sep .. "%0" .. frameWidth .. "d%s", frameFolder, frame, sequenceExtension)
-end
-
 -- Normalize paths for cross-platform (forward slashes → backslashes on Windows)
-local function normalizePath(path)
-    if IS_WINDOWS then path = path:gsub("/", "\\") end
-    return path
-end
-
-
-
--- Remove a directory (cross-platform)
 local function removeDirectory(path)
-    local cmd = IS_WINDOWS
+  local cmd = IS_WINDOWS
       and string.format('rd /s /q "%s"', path)
-      or  string.format('rm -rf "%s"', path)
-    local result, exitCode = runCommandFullBlocking(cmd)
-    if result == nil then
-      fuseLog("[RemoveDirectory] Failed to spawn removal for: " .. path)
-      return
-    end
-    if exitCode == nil then
-      fuseLog("[RemoveDirectory] Could not get exit code from removal of '" .. path .. "'")
-    elseif exitCode ~= 0 then
-      fuseLog("[RemoveDirectory] Removal of '" .. path .. "' returned exit code " .. exitCode .. " (output: " .. result:sub(1, 200) .. ")")
-    end
-end
-
--- Cross-platform sleep (seconds)
-local function sleep(seconds)
-  if IS_WINDOWS then
-    _K32.Sleep(seconds * 1000)
-  else
-    _libc.usleep(seconds * 1000000)
+      or string.format('rm -rf "%s"', path)
+  local result, exitCode = runCommandFullBlocking(cmd)
+  if result == nil then
+    fuseLog("[RemoveDirectory] Failed to spawn removal for: " .. path)
+    return
+  end
+  if exitCode == nil then
+    fuseLog("[RemoveDirectory] Could not get exit code from removal of '" .. path .. "'")
+  elseif exitCode ~= 0 then
+    fuseLog("[RemoveDirectory] Removal of '" ..
+      path .. "' returned exit code " .. exitCode .. " (output: " .. result:sub(1, 200) .. ")")
   end
 end
 
@@ -545,59 +334,8 @@ local function getFileSizeMB(path)
   if not f then return nil end
   local size = f:seek("end")
   f:close()
-  if size <= 0 then return nil end
+  if not size or size <= 0 then return nil end
   return string.format("%.1f MB", size / (1024 * 1024))
-end
-
--- Get info about a frame folder: count of PNG files and total size as string.
--- Returns (count, size_string) or (nil, nil) if folder doesn't exist.
-local function getFrameFolderInfo(folderPath)
-  local f = io.open(folderPath, "r")
-  if not f then return nil, nil end
-  f:close()
-
-  local count = 0
-  local totalSize = 0
-  local handle = io.popen(IS_WINDOWS
-    and string.format('dir /a-d /b "%s\\*.png" 2>nul', folderPath)
-    or string.format('find "%s" -maxdepth 1 -name "*.png" -type f 2>/dev/null', folderPath))
-  if handle then
-    for line in handle:lines() do
-      count = count + 1
-      -- Try to get size too; on Unix `ls -l` can give size in a second pass,
-      -- but for simplicity just count and do a second pass for size.
-    end
-    handle:close()
-  end
-
-  -- Get total size via du/dir
-  local sizeStr = nil
-  if count > 0 then
-    local sizeCmd = IS_WINDOWS
-      and string.format('cmd /c for %%f in ("%s\\*.png") do set /a total+=%%~zf & echo !total!', folderPath)
-      or string.format('du -sb "%s" 2>/dev/null | cut -f1', folderPath)
-    local out = runCommandFullBlocking(sizeCmd)
-    if out then
-      local bytes = tonumber(out:match("(%d+)"))
-      if bytes then
-        sizeStr = string.format("%.1f MB", bytes / (1024 * 1024))
-      end
-    end
-  end
-
-  return count, sizeStr
-end
-
--- Remove the frame folder for a given base path.
--- Returns a human-readable status string.
-local function clearFrameFolder(basePath)
-  local frameFolder = basePath .. "_frames"
-  local count, _ = getFrameFolderInfo(frameFolder)
-  if count and count > 0 then
-    removeDirectory(frameFolder)
-    return "Cleared " .. count .. " frame(s)"
-  end
-  return "No frames to clear"
 end
 
 -- Check whether a cancel has been requested.  Uses two independent mechanisms
@@ -608,61 +346,28 @@ end
 --      Fusion's UI even before NotifyChanged fires
 local function isCancelRequested(self_, req)
   return (self_ and self_:GetData("cancelRequested")) or
-         (InCancelBtn and req and InCancelBtn:GetValue(req).Value > 0.5)
+      (InCancelBtn and req and InCancelBtn:GetValue(req).Value > 0.5)
 end
 
 -- Refresh the output file size label.
 local function refreshOutputFileSize(basePath, ext)
-  if not InOutputFileSize then return end
+  if not InExportingLabel then return end
   local outputFile = basePath .. ext
   local sizeStr = getFileSizeMB(outputFile)
   if sizeStr then
-    InOutputFileSize:SetAttrs({ LINKS_Name = "<span style='color:#b0b8c0;'>Output: <b>" .. sizeStr .. "</b></span>" })
+    InExportingLabel:SetAttrs({ LINKS_Name = "<center><span style='color:#b0b8c0;'>Output size: <b>" .. sizeStr .. "</b></span></center>" })
   else
-    InOutputFileSize:SetAttrs({ LINKS_Name = "<span style='color:#8a94a0;'>Output: —</span>" })
+    InExportingLabel:SetAttrs({ LINKS_Name = "<center><span style='color:#8a94a0;'>Output size: —</span></center>" })
   end
 end
 
--- Refresh the frame folder status label.
-local function refreshFrameStatus(basePath)
-  if not InFrameStatus then return end
-  local frameFolder = basePath .. "_frames"
-  local count, sizeStr = getFrameFolderInfo(frameFolder)
-  if count and count > 0 then
-    InFrameStatus:SetAttrs({ LINKS_Name = "<span style='color:#b0b8c0;'>Frames: <b>" .. count .. "</b> (" .. (sizeStr or "?") .. ")</span>" })
-    InClearFramesBtn:SetAttrs({ LINKS_Name = "Clear " .. count .. " Frames" })
-  else
-    InFrameStatus:SetAttrs({ LINKS_Name = "<span style='color:#8a94a0;'>Frames: —</span>" })
-    InClearFramesBtn:SetAttrs({ LINKS_Name = "Clear Exported Frames" })
-  end
-end
-
--- Validate a path before using it in shell commands.
--- Returns true or false + reason.
---
--- Shell metacharacters that are interpreted even inside double-quoted
--- strings: $ ` \ " ! and control characters (\n, \r).
--- We also reject | ; & as a defense-in-depth measure for the rare case
--- a path might appear outside quotes.
+-- Commands use double-quoted paths. Windows separators are literal, but
+-- percent expansion must be rejected even inside quotes.
 local function isValidShellPath(path)
-    if not path or path == "" then
-        return false, "path is empty"
-    end
-    -- Reject $ ` \ " ! | ; & and control characters.
-    -- Inside a double-quoted shell string these expand ($ ` \ " !) or
-    -- could break quoting (\ "). | ; & are rejected as defense-in-depth.
-    -- Note: double-quoted Lua string so \\n and \\r are actual control chars.
-    if path:match("[$`\\\"!|;&\n\r]") then
-        return false, "path contains shell metacharacters"
-    end
-    if IS_WINDOWS then
-        -- % expands environment variables in cmd.exe even inside " quotes.
-        -- < > are redirection operators; " would break quoting.
-        if path:match('["<>%%]') then
-            return false, "path contains invalid Windows characters"
-        end
-    end
-    return true
+  if not path or path == "" then return false, "path is empty" end
+  local forbidden = IS_WINDOWS and '[%c"<>%%!|&]' or '[$`\\\\"%c!|;&]'
+  if path:find(forbidden) then return false, "path contains shell metacharacters" end
+  return true
 end
 
 -- endregion
@@ -672,11 +377,11 @@ end
 -- ============================================================================
 
 local function isTwoPassCodec(codec)
-    return codec == "h264" or codec == "h265" or codec == "vp9" or codec == "av1" or codec == "avif"
+  return codec == "h264" or codec == "h265" or codec == "vp9" or codec == "av1" or codec == "avif"
 end
 
 local function isAv1FamilyCodec(codec)
-    return codec == "av1" or codec == "avif"
+  return codec == "av1" or codec == "avif"
 end
 
 local PRESET_DEFINITIONS = {
@@ -684,61 +389,71 @@ local PRESET_DEFINITIONS = {
     codec = "h264",
     name = "MP4 (H.264)",
     outputExtension = ".mp4",
-    commandTemplate = 'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" ${BackgroundInputArg} -frames:v ${FrameCount} -c:v libx264 ${RateControlArg} ${PresetArg} ${ProfileArg} ${TuneArg} -g ${S:KeyframeInterval} -pix_fmt ${PixelFormat} ${FastStartArg} ${AlphaFlattenFilterArg} ${TwoPassArg} ${OutputFramerateArg} "${OutputVideoPath}"',
+    commandTemplate =
+    'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" ${BackgroundInputArg} -frames:v ${FrameCount} -c:v libx264 ${RateControlArg} ${PresetArg} ${ProfileArg} ${TuneArg} -g ${S:KeyframeInterval} -pix_fmt ${PixelFormat} ${FastStartArg} ${AlphaFlattenFilterArg} ${TwoPassArg} ${OutputFramerateArg} "${OutputVideoPath}"',
   },
   {
     codec = "h265",
     name = "MP4 (H.265/HEVC)",
     outputExtension = ".mp4",
-    commandTemplate = 'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" ${BackgroundInputArg} -frames:v ${FrameCount} -c:v libx265 -tag:v hvc1 ${RateControlArg} ${PresetArg} ${ProfileArg} ${TuneArg} -g ${S:KeyframeInterval} -pix_fmt ${PixelFormat} ${FastStartArg} ${AlphaFlattenFilterArg} ${TwoPassArg} ${OutputFramerateArg} "${OutputVideoPath}"',
+    commandTemplate =
+    'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" ${BackgroundInputArg} -frames:v ${FrameCount} -c:v libx265 -tag:v hvc1 ${RateControlArg} ${PresetArg} ${ProfileArg} ${TuneArg} -g ${S:KeyframeInterval} -pix_fmt ${PixelFormat} ${FastStartArg} ${AlphaFlattenFilterArg} ${TwoPassArg} ${OutputFramerateArg} "${OutputVideoPath}"',
   },
   {
     codec = "av1",
     name = "MP4 (AV1)",
     outputExtension = ".mp4",
-    commandTemplate = 'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" ${BackgroundInputArg} -frames:v ${FrameCount} -c:v libaom-av1 ${RateControlArg} ${PresetArg} ${ProfileArg} ${TuneArg} -g ${S:KeyframeInterval} -pix_fmt ${PixelFormat} ${FastStartArg} ${AlphaFlattenFilterArg} ${TwoPassArg} ${OutputFramerateArg} "${OutputVideoPath}"',
+    commandTemplate =
+    'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" ${BackgroundInputArg} -frames:v ${FrameCount} -c:v libaom-av1 ${RateControlArg} ${PresetArg} ${ProfileArg} ${TuneArg} -g ${S:KeyframeInterval} -pix_fmt ${PixelFormat} ${FastStartArg} ${AlphaFlattenFilterArg} ${TwoPassArg} ${OutputFramerateArg} "${OutputVideoPath}"',
   },
   {
     codec = "vp9",
     name = "WebM (VP9)",
     outputExtension = ".webm",
-    commandTemplate = 'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" ${BackgroundInputArg} -frames:v ${FrameCount} -c:v libvpx-vp9 ${RateControlArg} ${PresetArg} -g ${S:KeyframeInterval} -pix_fmt ${PixelFormat} ${AlphaFlattenFilterArg} ${TwoPassArg} ${OutputFramerateArg} "${OutputVideoPath}"',
+    commandTemplate =
+    'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" ${BackgroundInputArg} -frames:v ${FrameCount} -c:v libvpx-vp9 ${RateControlArg} ${PresetArg} -g ${S:KeyframeInterval} -pix_fmt ${PixelFormat} ${AlphaFlattenFilterArg} ${TwoPassArg} ${OutputFramerateArg} "${OutputVideoPath}"',
   },
   {
     codec = "gif",
     name = "GIF",
     outputExtension = ".gif",
-    commandTemplate = 'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" -frames:v ${FrameCount} ${GifFilterComplexArg} ${OutputFramerateArg} "${OutputVideoPath}"',
+    commandTemplate =
+    'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" -frames:v ${FrameCount} ${GifFilterComplexArg} ${OutputFramerateArg} "${OutputVideoPath}"',
   },
   {
     codec = "gif_gifski",
     name = "GIF (Gifski)",
     outputExtension = ".gif",
-    commandTemplate = '@gifski -o "${OutputVideoPath}" -r ${CompFramerate} -Q ${S:GifskiQuality} ${GifskiFlags} --repeat ${S:GifskiRepeat} ${GifskiWidthArg} ${GifskiHeightArg} "${SequencePattern}"',
+    commandTemplate =
+    '@gifski -o "${OutputVideoPath}" -r ${CompFramerate} -Q ${S:GifskiQuality} ${GifskiFlags} --repeat ${S:GifskiRepeat} ${GifskiWidthArg} ${GifskiHeightArg} "${SequencePattern}"',
   },
   {
     codec = "webp",
     name = "WebP (Animated)",
     outputExtension = ".webp",
-    commandTemplate = 'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" -frames:v ${FrameCount} -c:v libwebp_anim ${WebPEncoderArgs} -loop 0 ${WebPFilterArg} ${OutputFramerateArg} "${OutputVideoPath}"',
+    commandTemplate =
+    'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" -frames:v ${FrameCount} -c:v libwebp_anim ${WebPEncoderArgs} -loop 0 ${WebPFilterArg} ${OutputFramerateArg} "${OutputVideoPath}"',
   },
   {
     codec = "apng",
     name = "APNG (Animated PNG)",
     outputExtension = ".png",
-    commandTemplate = 'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" -frames:v ${FrameCount} -c:v apng -plays 0 ${ApngEncoderArgs} -f apng ${OutputFramerateArg} "${OutputVideoPath}"',
+    commandTemplate =
+    'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" -frames:v ${FrameCount} -c:v apng -plays 0 ${ApngEncoderArgs} -f apng ${OutputFramerateArg} "${OutputVideoPath}"',
   },
   {
     codec = "avif",
     name = "AVIF",
     outputExtension = ".avif",
-    commandTemplate = 'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" ${BackgroundInputArg} -frames:v ${FrameCount} -c:v libaom-av1 ${RateControlArg} ${PresetArg} -g ${S:KeyframeInterval} -pix_fmt yuv420p ${FastStartArg} ${TwoPassArg} ${OutputFramerateArg} "${OutputVideoPath}"',
+    commandTemplate =
+    'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" ${BackgroundInputArg} -frames:v ${FrameCount} -c:v libaom-av1 ${RateControlArg} ${PresetArg} -g ${S:KeyframeInterval} -pix_fmt yuv420p ${FastStartArg} ${TwoPassArg} ${OutputFramerateArg} "${OutputVideoPath}"',
   },
   {
     codec = "prores",
     name = "QuickTime ProRes",
     outputExtension = ".mov",
-    commandTemplate = 'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" -frames:v ${FrameCount} ${AlphaFlattenFilterArg} ${OutputFramerateArg} -c:v prores_ks ${ProResProfileArg} -pix_fmt ${ProResPixFmt} -vendor apl0 "${OutputVideoPath}"',
+    commandTemplate =
+    'ffmpeg -y -framerate ${CompFramerate} -start_number ${StartFrame} -i "${SequencePattern}" -frames:v ${FrameCount} ${AlphaFlattenFilterArg} ${OutputFramerateArg} -c:v prores_ks ${ProResProfileArg} -pix_fmt ${ProResPixFmt} -vendor apl0 "${OutputVideoPath}"',
   },
   {
     codec = "png_sequence",
@@ -944,10 +659,10 @@ local APNG_PREDICTION_OPTIONS = {
 }
 
 local PRORES_PROFILE_OPTIONS = {
-  { name = "ProRes 422 Proxy", profile = 0, pixFmt = "yuv422p10le", hasAlpha = false },
-  { name = "ProRes 422 LT",    profile = 1, pixFmt = "yuv422p10le", hasAlpha = false },
-  { name = "ProRes 422",       profile = 2, pixFmt = "yuv422p10le", hasAlpha = false },
-  { name = "ProRes 422 HQ",    profile = 3, pixFmt = "yuv422p10le", hasAlpha = false },
+  { name = "ProRes 422 Proxy", profile = 0, pixFmt = "yuv422p10le",  hasAlpha = false },
+  { name = "ProRes 422 LT",    profile = 1, pixFmt = "yuv422p10le",  hasAlpha = false },
+  { name = "ProRes 422",       profile = 2, pixFmt = "yuv422p10le",  hasAlpha = false },
+  { name = "ProRes 422 HQ",    profile = 3, pixFmt = "yuv422p10le",  hasAlpha = false },
   { name = "ProRes 4444",      profile = 4, pixFmt = "yuva444p10le", hasAlpha = true },
   { name = "ProRes 4444 XQ",   profile = 5, pixFmt = "yuva444p10le", hasAlpha = true },
 }
@@ -1018,7 +733,8 @@ local function buildProgressHtml(progress, current, total, statusText)
   local filledW = math.max(0, math.min(barW, math.floor(progress * barW)))
   local emptyW = barW - filledW
 
-  local parts = { string.format("<center><table border='0' cellspacing='0' cellpadding='0' style='width:350px;height:%dpx;'><tr>", barH) }
+  local parts = { string.format(
+    "<center><table border='0' cellspacing='0' cellpadding='0' style='width:350px;height:%dpx;'><tr>", barH) }
 
   if filledW > 0 then
     table.insert(parts, string.format("<td bgcolor='#5a9e6f' width='%d' height='%d'></td>", filledW, barH))
@@ -1030,7 +746,8 @@ local function buildProgressHtml(progress, current, total, statusText)
   table.insert(parts, "</tr></table>")
 
   if current and total and total > 0 then
-    table.insert(parts, string.format("<span style='color:#8a94a0;'>Frame %d / %d &middot; %d%%</span>", current, total, pct))
+    table.insert(parts,
+      string.format("<span style='color:#8a94a0;'>Frame %d / %d &middot; %d%%</span>", current, total, pct))
   else
     table.insert(parts, string.format("<span style='color:#8a94a0;'>%d%%</span>", pct))
   end
@@ -1075,8 +792,8 @@ local function findGifskiPath()
     return gifskiPathCache
   end
 
-  local output = runCommandFullBlocking('"gifski" --version 2>&1') or ""
-  if output:find("gifski", 1, true) then
+  local output, exitCode = runCommandFullBlocking('"gifski" --version 2>&1')
+  if exitCode == 0 and output and output:find("gifski", 1, true) then
     gifskiPathCache = "gifski"
     return "gifski"
   end
@@ -1087,6 +804,7 @@ end
 
 -- Detect available encoders for a given codec by parsing `ffmpeg -encoders`.
 -- Returns a sorted list of encoder names. Caches results per codec key.
+local encoderListing
 local function detectEncodersForCodec(codecName)
   if ENCODER_AVAIL_CACHE[codecName] then
     return ENCODER_AVAIL_CACHE[codecName]
@@ -1104,20 +822,24 @@ local function detectEncodersForCodec(codecName)
     return {}
   end
 
-  local encodersOutput = runCommandFullBlocking(string.format('"%s" -encoders', ffmpeg)) or ""
+  if not encoderListing then
+    local output, exitCode = runCommandFullBlocking(string.format('"%s" -encoders', ffmpeg))
+    if exitCode ~= 0 then return {} end
+    encoderListing = output
+  end
+  local encodersOutput = encoderListing
   local results = {}
   -- Pattern matches lines like:
   --   " V..... libaom-av1           Alliance for Open Media AV1 (codec av1)"
   local pattern = "^%s*%S+%s+(%S+)%s+.*%(codec " .. ffmpegCodec .. "%)"
   for line in encodersOutput:gmatch("([^\n]+)") do
     local encName = line:match(pattern)
-    if encName then
-      table.insert(results, encName)
+    for _, supported in ipairs(ENCODER_PRIORITY[codecName] or {}) do
+      if encName == supported then table.insert(results, encName) end
     end
   end
 
-  -- Sort by priority order: priority list items first (in priority order),
-  -- then any unknown encoders alphabetically.
+  -- Prefer supported encoders in the configured priority order.
   local priorityList = ENCODER_PRIORITY[codecName] or {}
   local priorityIdx = {}
   for i, name in ipairs(priorityList) do priorityIdx[name] = i end
@@ -1150,7 +872,8 @@ local function ensureEncoderOptionsForCodec(codecName, codecCtrl)
     end
     ENCODER_OPTIONS_UI_POPULATED[codecName] = true
     if #activeOptions > 0 then
-      fuseLog("[ensureEncoderOptionsForCodec] Populated encoder combo for", codecName, "with", #activeOptions, "encoders:", table.concat(activeOptions, ", "))
+      fuseLog("[ensureEncoderOptionsForCodec] Populated encoder combo for", codecName, "with", #activeOptions,
+        "encoders:", table.concat(activeOptions, ", "))
     end
   end
 
@@ -1178,7 +901,8 @@ local function getSelectedEncoderForCodec(codecName, req)
     return selectedEncoder
   end
 
-  fuseLog("[getSelectedEncoderForCodec] Encoder index", encoderIdx, "out of range for", codecName, "— using", encoderOptions[1])
+  fuseLog("[getSelectedEncoderForCodec] Encoder index", encoderIdx, "out of range for", codecName, "— using",
+    encoderOptions[1])
   return encoderOptions[1]
 end
 
@@ -1225,7 +949,7 @@ local function splitBaseAndExtension(path)
   -- This correctly handles "file.txt" → "file", ".txt",
   -- "file." → "file", "" (trailing dot is not an extension),
   -- and "a.tar.gz" → "a.tar", ".gz".
-  local base, ext = string.match(path, "^(.*)%.([^%.]+)$")
+  local base, ext = string.match(path, "^(.*)%.([^%./\\]+)$")
   if base and ext then
     return base, "." .. ext
   end
@@ -1299,7 +1023,8 @@ local function shouldShowSliderForPreset(tokenName, presetDefinition)
   end
 
   if tokenName == "MaxRateMbps" or tokenName == "BufferSizeMbps" then
-    return codecName ~= "vp9" and codecName ~= "gif" and codecName ~= "webp" and codecName ~= "apng" and codecName ~= "png_sequence"
+    return codecName ~= "vp9" and codecName ~= "gif" and codecName ~= "webp" and codecName ~= "apng" and
+        codecName ~= "png_sequence"
   end
 
   if tokenName == "OutputFramerate" then
@@ -1363,15 +1088,11 @@ local function cleanTerminalCommand(template, req, runtimeTokens)
   end)
 end
 
-local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, frameExtension, frameWidth)
+local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, frameExtension, frameWidth, workBase)
+  workBase = workBase or basePath
   local presetDefinition = getPresetDefinition(req)
   local codecName = presetDefinition.codec or "h264"
   local commandTemplate = presetDefinition.commandTemplate
-  if presetDefinition.codec == "custom" then
-    local templateValue = InCommandTemplate:GetValue(req)
-    commandTemplate = (templateValue and templateValue.Value ~= "") and templateValue.Value or presetDefinition.commandTemplate
-    fuseLog("[buildResolvedCommand] Using custom command template:", commandTemplate)
-  end
 
   local selectedEncoder = getSelectedEncoderForCodec(codecName, req)
   local defaultEncoder = commandTemplate:match("%-c:v%s+(%S+)")
@@ -1382,12 +1103,12 @@ local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, f
   if presetDefinition.codec == "gif_gifski" then
     local gsExe = findGifskiPath()
     if gsExe then
-      commandTemplate = commandTemplate:gsub("@gifski", gsExe, 1)
+      commandTemplate = commandTemplate:gsub("@gifski", function() return gsExe end, 1)
     end
   end
 
   frameWidth = frameWidth or 4
-  local sequencePattern = string.format("%s_%%0" .. frameWidth .. "d%s", basePath, frameExtension)
+  local sequencePattern = string.format("%s_%%0" .. frameWidth .. "d%s", workBase:gsub("%%", "%%%%"), frameExtension)
   local outputVideoPath = basePath .. presetDefinition.outputExtension
   local frameCount = math.max(1, endFrame - startFrame + 1)
   local resolutionMode = math.floor(InResolutionMode:GetValue(req).Value + 0.5)
@@ -1416,10 +1137,6 @@ local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, f
   local profileValue = H264_PROFILE_OPTIONS[profileIndex] or H264_PROFILE_OPTIONS[1]
   local tuneValue = H264_TUNE_OPTIONS[tuneIndex] or H264_TUNE_OPTIONS[1]
   local pixelFormatValue = PIXEL_FORMAT_OPTIONS[pixelFormatIndex] or PIXEL_FORMAT_OPTIONS[1]
-
-  if codecName == "gif" and compFrameRate > 50 then
-    compFrameRate = 50
-  end
 
   if codecName == "gif" and outputFramerateValue > 50 then
     outputFramerateValue = 50
@@ -1452,11 +1169,7 @@ local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, f
   end
 
   if isAv1FamilyCodec(codecName) then
-    if profileValue == "main" then
-      profileArg = "-profile:v main"
-    elseif profileValue == "high" then
-      profileArg = "-profile:v high"
-    end
+    profileArg = ""
   end
 
   local tuneArg = ""
@@ -1494,6 +1207,8 @@ local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, f
   if rateControlMode == "CRF" then
     if codecName == "vp9" then
       rateControlArg = string.format("-b:v 0 -crf %d", crfValue)
+    elseif effectiveEncoder == "librav1e" then
+      rateControlArg = string.format("-qp %d", math.floor(crfValue * 255 / 63 + 0.5))
     else
       rateControlArg = string.format("-crf %d", crfValue)
       if codecName == "h264" or codecName == "h265" then
@@ -1504,12 +1219,14 @@ local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, f
     rateControlArg = string.format("-b:v %gM", targetBitrateMbps)
   elseif rateControlMode == "CBR" then
     if codecName == "vp9" then
-      rateControlArg = string.format("-b:v %gM -minrate %gM -maxrate %gM", targetBitrateMbps, targetBitrateMbps, targetBitrateMbps)
+      rateControlArg = string.format("-b:v %gM -minrate %gM -maxrate %gM", targetBitrateMbps, targetBitrateMbps,
+        targetBitrateMbps)
     elseif isAv1FamilyCodec(codecName) then
       -- SVT-AV1 doesn't support VBV/HRD params outside CRF mode; fall back to plain VBR
       rateControlArg = string.format("-b:v %gM", targetBitrateMbps)
     else
-      rateControlArg = string.format("-b:v %gM -maxrate %gM -bufsize %gM", targetBitrateMbps, targetBitrateMbps, targetBitrateMbps * 2)
+      rateControlArg = string.format("-b:v %gM -maxrate %gM -bufsize %gM", targetBitrateMbps, targetBitrateMbps,
+        targetBitrateMbps * 2)
       if codecName == "h264" then
         rateControlArg = rateControlArg .. " -nal-hrd cbr"
       end
@@ -1535,7 +1252,7 @@ local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, f
 
   local twoPassArg = ""
   if twoPass and canTwoPass then
-    twoPassArg = "-pass 2 -passlogfile \"" .. basePath .. "_ffmpeg2pass\""
+    twoPassArg = "-pass 2 -passlogfile \"" .. workBase .. "_ffmpeg2pass\""
   end
 
   local scaleFilter = ""
@@ -1554,15 +1271,18 @@ local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, f
   local proResPixFmt = proResProfile.pixFmt
 
   local shouldFlattenAlpha = (codecName == "h264" or codecName == "h265" or codecName == "av1") or
-                              (codecName == "prores" and not proResProfile.hasAlpha) or
-                              (codecName == "vp9" and not vp9Alpha)
+      (codecName == "prores" and not proResProfile.hasAlpha) or
+      (codecName == "vp9" and not vp9Alpha)
   local backgroundInputArg = ""
   local alphaFlattenFilterArg = scaleFilter
 
   if shouldFlattenAlpha then
-    alphaFlattenFilterArg = '-filter_complex "[0:v]split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto"'
+    alphaFlattenFilterArg =
+    '-filter_complex "[0:v]split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto"'
     if widthValue > 0 or heightValue > 0 then
-      alphaFlattenFilterArg = string.format('-filter_complex "[0:v]split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto,scale=%d:%d:flags=lanczos"', widthValue, heightValue)
+      alphaFlattenFilterArg = string.format(
+        '-filter_complex "[0:v]split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto,scale=%d:%d:flags=lanczos"',
+        widthValue, heightValue)
     end
   end
 
@@ -1583,12 +1303,13 @@ local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, f
   -- Builds a global palette from all frames first, then applies it with
   -- dithering.  This avoids the single-frame limitation of stats_mode=single
   -- in the one-pass filtergraph.
-  local gifDoTwoPassPalette = (gifPaletteMode == "single") and InGifTwoPassPalette:GetValue(req).Value >= 0.5
+  local gifDoTwoPassPalette = codecName == "gif" and (gifPaletteMode == "single") and
+      InGifTwoPassPalette:GetValue(req).Value >= 0.5
 
   if gifDoTwoPassPalette then
     -- Build the palette output path for pass 1.  The palette PNG is a
     -- temporary file that gets deleted after the main encode finishes.
-    local palettePath = basePath .. "_palette.png"
+    local palettePath = workBase .. "_palette.png"
 
     -- Pass 1: generate the palette from all frames.
     -- For non-alpha, flatten transparency before palettegen (same as the one-pass
@@ -1597,20 +1318,24 @@ local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, f
     if gifAlpha then
       local basePaletteGen = "palettegen=max_colors=%d:stats_mode=full"
       if widthValue > 0 or heightValue > 0 then
-        paletteGenFilter = string.format("scale=%d:%d:flags=lanczos,format=yuva420p," .. basePaletteGen, widthValue, heightValue, gifMaxColors)
+        paletteGenFilter = string.format("scale=%d:%d:flags=lanczos,format=yuva420p," .. basePaletteGen, widthValue,
+          heightValue, gifMaxColors)
       else
         paletteGenFilter = string.format("format=yuva420p," .. basePaletteGen, gifMaxColors)
       end
     else
-      local flattenPrefix = "split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto,"
+      local flattenPrefix =
+      "split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto,"
       local basePaletteGen = string.format("palettegen=max_colors=%d:stats_mode=full", gifMaxColors)
       if widthValue > 0 or heightValue > 0 then
-        paletteGenFilter = string.format("scale=%d:%d:flags=lanczos," .. flattenPrefix .. "%s", widthValue, heightValue, basePaletteGen)
+        paletteGenFilter = string.format("scale=%d:%d:flags=lanczos," .. flattenPrefix .. "%s", widthValue, heightValue,
+          basePaletteGen)
       else
         paletteGenFilter = flattenPrefix .. basePaletteGen
       end
     end
-    gifPaletteGenCmd = string.format('ffmpeg -y -framerate %s -start_number %d -i "%s" -frames:v %d -lavfi "%s" -update 1 "%s"',
+    gifPaletteGenCmd = string.format(
+      'ffmpeg -y -framerate %s -start_number %d -i "%s" -frames:v %d -lavfi "%s" -update 1 "%s"',
       compFrameRate, startFrame, sequencePattern, frameCount, paletteGenFilter, palettePath)
 
     -- Pass 2: use the saved palette with dithering.  The palette PNG is
@@ -1620,14 +1345,17 @@ local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, f
     local mainFilter
     if gifAlpha then
       if widthValue > 0 or heightValue > 0 then
-        mainFilter = string.format("[0:v]scale=%d:%d:flags=lanczos,format=yuva420p[fg];[fg][1:v]%s", widthValue, heightValue, gifPaletteUseArgs)
+        mainFilter = string.format("[0:v]scale=%d:%d:flags=lanczos,format=yuva420p[fg];[fg][1:v]%s", widthValue,
+          heightValue, gifPaletteUseArgs)
       else
         mainFilter = string.format("[0:v]format=yuva420p[fg];[fg][1:v]%s", gifPaletteUseArgs)
       end
     else
-      local flattenSuffix = "split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto[flat]"
+      local flattenSuffix =
+      "split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto[flat]"
       if widthValue > 0 or heightValue > 0 then
-        mainFilter = string.format("[0:v]scale=%d:%d:flags=lanczos[scaled];[scaled]%s;[flat][1:v]%s", widthValue, heightValue, flattenSuffix, gifPaletteUseArgs)
+        mainFilter = string.format("[0:v]scale=%d:%d:flags=lanczos[scaled];[scaled]%s;[flat][1:v]%s", widthValue,
+          heightValue, flattenSuffix, gifPaletteUseArgs)
       else
         mainFilter = string.format("[0:v]%s;[flat][1:v]%s", flattenSuffix, gifPaletteUseArgs)
       end
@@ -1635,14 +1363,22 @@ local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, f
     gifFilterComplexArg = string.format('-lavfi "%s"', mainFilter)
     gifPaletteInputArg = string.format('-i "%s"', palettePath)
   elseif gifAlpha then
-    gifFilterComplexArg = string.format('-filter_complex "[0:v]split[palette_source][gif_source];[palette_source]%s[palette];[gif_source][palette]%s"', gifPaletteGenArgs, gifPaletteUseArgs)
+    gifFilterComplexArg = string.format(
+      '-filter_complex "[0:v]split[palette_source][gif_source];[palette_source]%s[palette];[gif_source][palette]%s"',
+      gifPaletteGenArgs, gifPaletteUseArgs)
     if widthValue > 0 or heightValue > 0 then
-      gifFilterComplexArg = string.format('-filter_complex "[0:v]scale=%d:%d:flags=lanczos,split[palette_source][gif_source];[palette_source]%s[palette];[gif_source][palette]%s"', widthValue, heightValue, gifPaletteGenArgs, gifPaletteUseArgs)
+      gifFilterComplexArg = string.format(
+        '-filter_complex "[0:v]scale=%d:%d:flags=lanczos,split[palette_source][gif_source];[palette_source]%s[palette];[gif_source][palette]%s"',
+        widthValue, heightValue, gifPaletteGenArgs, gifPaletteUseArgs)
     end
   else
-    gifFilterComplexArg = string.format('-filter_complex "[0:v]split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto,split[palette_source][gif_source];[palette_source]%s[palette];[gif_source][palette]%s"', gifPaletteGenArgs, gifPaletteUseArgs)
+    gifFilterComplexArg = string.format(
+      '-filter_complex "[0:v]split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto,split[palette_source][gif_source];[palette_source]%s[palette];[gif_source][palette]%s"',
+      gifPaletteGenArgs, gifPaletteUseArgs)
     if widthValue > 0 or heightValue > 0 then
-      gifFilterComplexArg = string.format('-filter_complex "[0:v]split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto,scale=%d:%d:flags=lanczos,split[palette_source][gif_source];[palette_source]%s[palette];[gif_source][palette]%s"', widthValue, heightValue, gifPaletteGenArgs, gifPaletteUseArgs)
+      gifFilterComplexArg = string.format(
+        '-filter_complex "[0:v]split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto,scale=%d:%d:flags=lanczos,split[palette_source][gif_source];[palette_source]%s[palette];[gif_source][palette]%s"',
+        widthValue, heightValue, gifPaletteGenArgs, gifPaletteUseArgs)
     end
   end
 
@@ -1667,9 +1403,12 @@ local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, f
       webpFilterArg = string.format('-vf "scale=%d:%d:flags=lanczos,format=yuva420p"', widthValue, heightValue)
     end
   else
-    webpFilterArg = '-filter_complex "[0:v]split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto,format=yuv420p"'
+    webpFilterArg =
+    '-filter_complex "[0:v]split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto,format=yuv420p"'
     if widthValue > 0 or heightValue > 0 then
-      webpFilterArg = string.format('-filter_complex "[0:v]split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto,scale=%d:%d:flags=lanczos,format=yuv420p"', widthValue, heightValue)
+      webpFilterArg = string.format(
+        '-filter_complex "[0:v]split[fg][bg_ref];[bg_ref]format=rgba,geq=r=0:g=0:b=0:a=255[bg];[bg][fg]overlay=format=auto,scale=%d:%d:flags=lanczos,format=yuv420p"',
+        widthValue, heightValue)
     end
   end
 
@@ -1681,7 +1420,7 @@ local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, f
   -- Gifski flags (recorded for runtime token cascade; renderImageSequence builds cmd from scratch)
   local runtimeTokens = {
     StartFrame = startFrame,
-    FrameCount = frameCount,
+    FrameCount = math.max(1, math.ceil(frameCount * outputFramerateValue / compFrameRate)),
     SequencePattern = sequencePattern,
     OutputVideoPath = outputVideoPath,
     Framerate = compFrameRate,
@@ -1723,24 +1462,30 @@ local function applyPresetTemplate(presetValue)
   activePreset = presetDefinition
   fuseLog("[applyPreset] Codec:", presetDefinition.codec, "Name:", presetDefinition.name)
   local codecName = presetDefinition.codec or "h264"
-  local showEncoder = codecName == "h264" or codecName == "h265" or codecName == "av1" or codecName == "avif" or codecName == "vp9"
+  local showEncoder = codecName == "h264" or codecName == "h265" or codecName == "av1" or codecName == "avif" or
+      codecName == "vp9"
   local showFrameSection = codecName ~= "png_sequence" and codecName ~= "custom"
-  local showRateSection = codecName == "h264" or codecName == "h265" or codecName == "av1" or codecName == "avif" or codecName == "vp9"
+  local showRateSection = codecName == "h264" or codecName == "h265" or codecName == "av1" or codecName == "avif" or
+      codecName == "vp9"
   local showEncoderPreset = showEncoder
   local showProfile = codecName == "h264" or codecName == "h265" or codecName == "av1" or codecName == "avif"
   local showTune = codecName == "h264" or codecName == "h265"
   local vp9AlphaOn = codecName == "vp9" and vp9AlphaEnabled
   local showWebMSection = codecName == "vp9"
   local showProResProfile = codecName == "prores"
-  local showPixelFormat = (codecName == "h264" or codecName == "h265" or codecName == "av1" or codecName == "avif" or codecName == "vp9") and not vp9AlphaOn
+  local showPixelFormat = (codecName == "h264" or codecName == "h265" or codecName == "av1" or codecName == "avif" or codecName == "vp9") and
+      not vp9AlphaOn
   local showFastStart = presetDefinition.outputExtension == ".mp4" and codecName ~= "png_sequence"
-  local showRateControlMode = codecName == "h264" or codecName == "h265" or codecName == "av1" or codecName == "avif" or codecName == "vp9"
+  local showRateControlMode = codecName == "h264" or codecName == "h265" or codecName == "av1" or codecName == "avif" or
+      codecName == "vp9"
   local isRateControlCodec = showRateControlMode
   local rcMode = rcMode
-  local showCRF = (isRateControlCodec and rcMode == "CRF") or (not isRateControlCodec and codecName ~= "gif" and codecName ~= "gif_gifski" and codecName ~= "webp" and codecName ~= "apng" and codecName ~= "prores" and codecName ~= "png_sequence" and codecName ~= "custom")
+  local showCRF = (isRateControlCodec and rcMode == "CRF") or
+      (not isRateControlCodec and codecName ~= "gif" and codecName ~= "gif_gifski" and codecName ~= "webp" and codecName ~= "apng" and codecName ~= "prores" and codecName ~= "png_sequence" and codecName ~= "custom")
   local showTargetBitrate = isRateControlCodec and (rcMode == "ABR" or rcMode == "CBR")
   local showVBV = (codecName == "h264" or codecName == "h265") and rcMode == "CRF"
-  local showTwoPass = codecName == "h264" or codecName == "h265" or codecName == "vp9" or codecName == "av1" or codecName == "avif"
+  local showTwoPass = codecName == "h264" or codecName == "h265" or codecName == "vp9" or codecName == "av1" or
+      codecName == "avif"
   -- Two-pass is incompatible with CRF — just hide it; the NotifyChanged handler
   -- will force it off when the user switches to CRF via the dropdown.
   if showTwoPass and rcMode == "CRF" then
@@ -1852,9 +1597,6 @@ local function applyPresetTemplate(presetValue)
     InHeight:SetAttrs({ IC_Visible = isManual })
   end
   InFramerate:SetAttrs({ IC_Visible = showFrameSection })
-  InCommandTemplate:SetAttrs({ IC_Visible = codecName ~= "png_sequence" })
-
-  InCommandTemplate:SetSource(Text(presetDefinition.commandTemplate), 0, 0)
   updateActiveSliderTokens(presetDefinition.commandTemplate)
 end
 
@@ -1869,7 +1611,7 @@ end
 
 -- zlib FFI: native DEFLATE (~50x faster than pure Lua). Cross-platform
 -- library names — falls back gracefully when zlib is not installed.
-ffi.cdef[[
+ffi.cdef [[
   unsigned long compressBound(unsigned long sourceLen);
   int compress2(unsigned char *dest, unsigned long *destLen,
                 const unsigned char *source, unsigned long sourceLen, int level);
@@ -1924,14 +1666,14 @@ end
 
 -- Fixed-Huffman DEFLATE tables (one final block, greedy LZ77 with 32K window).
 -- Inlined from PhysicsBox/Modules/Deflate.lua for zero-dependency encoding.
-local DEFL_LIT_CODE = ffi.new("uint16_t[288]")
-local DEFL_LIT_BITS = ffi.new("uint8_t[288]")
-local DEFL_DIST_CODE = ffi.new("uint8_t[30]")
-local DEFL_LEN_SYM  = ffi.new("uint8_t[259]")
-local DEFL_LEN_BASE  = { 3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258 }
-local DEFL_LEN_EXTRA = { 0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0 }
-local DEFL_DIST_BASE  = { 1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577 }
-local DEFL_DIST_EXTRA = { 0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13 }
+local DEFL_LIT_CODE   = ffi.new("uint16_t[288]")
+local DEFL_LIT_BITS   = ffi.new("uint8_t[288]")
+local DEFL_DIST_CODE  = ffi.new("uint8_t[30]")
+local DEFL_LEN_SYM    = ffi.new("uint8_t[259]")
+local DEFL_LEN_BASE   = { 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258 }
+local DEFL_LEN_EXTRA  = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 }
+local DEFL_DIST_BASE  = { 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 }
+local DEFL_DIST_EXTRA = { 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 }
 
 do
   local function reverseBits(v, bits)
@@ -1992,8 +1734,8 @@ local function deflateCompress_lua(data, n)
     end
   end
 
-  putBits(1, 1)  -- final block
-  putBits(1, 2)  -- fixed Huffman tables
+  putBits(1, 1) -- final block
+  putBits(1, 2) -- fixed Huffman tables
 
   local head = DEFL_HASH
   ffi.fill(head, 0x8000 * 4, 0xFF)
@@ -2050,7 +1792,7 @@ local function deflateCompress_lua(data, n)
     end
   end
 
-  putBits(DEFL_LIT_CODE[256], DEFL_LIT_BITS[256])  -- end of block
+  putBits(DEFL_LIT_CODE[256], DEFL_LIT_BITS[256]) -- end of block
   if accBits > 0 then
     out[outPos] = bit.band(acc, 0xFF)
     outPos = outPos + 1
@@ -2067,7 +1809,7 @@ local function deflateCompress(data, n)
     local bound = zlib.compressBound(n)
     local out = ffi.new("uint8_t[?]", bound)
     local outLen = ffi.new("unsigned long[1]", bound)
-    local rc = zlib.compress2(out, outLen, data, n, 1)  -- level 1 = fastest
+    local rc = zlib.compress2(out, outLen, data, n, 1) -- level 1 = fastest
     if rc == 0 then
       return ffi.string(out, outLen[0])
     end
@@ -2094,21 +1836,19 @@ end
 
 -- Encode a Fusion Image as PNG and write directly to disk.
 -- Uses GetScanLine() for pixel access (skipping the Clip API entirely).
--- Calls DownloadGPUMem(req) before reading scanlines to move GPU data to
--- system memory when needed (safe no-op if already there).
 -- Returns true on success, nil + error message on failure.
-local function writeImageAsPng(img, filePath, req)
-  -- Ensure pixel data is in system memory before reading scanlines.
-  -- The pcall guards against images already in CPU memory or nil req.
-  pcall(function() img:DownloadGPUMem(req) end)
-
+local function writeImageAsPng(img, filePath)
+  if img.Depth ~= 5 then
+    img = img:CopyOf({ IMG_Depth = 5 })
+  end
+  if not img or img.Depth ~= 5 then return nil, "RGBA8 conversion failed" end
   local w, h = img.Width, img.Height
   if not w or w <= 0 or not h or h <= 0 then
     return nil, "invalid image dimensions"
   end
 
   local stride = w * 4
-  local n = (stride + 1) * h  -- 1 filter byte per row
+  local n = (stride + 1) * h -- 1 filter byte per row
 
   -- Use a per-call buffer (local) to avoid thread-safety issues from
   -- sharing a module-level buffer across multiple tool instances.
@@ -2136,9 +1876,9 @@ local function writeImageAsPng(img, filePath, req)
 
   -- Assemble full PNG: signature + IHDR (8-bit RGBA, no interlace) + IDAT + IEND
   local pngData = "\137PNG\13\10\26\10"
-    .. pngChunk("IHDR", pngU32(w) .. pngU32(h) .. "\8\6\0\0\0")
-    .. pngChunk("IDAT", idat)
-    .. pngChunk("IEND", "")
+      .. pngChunk("IHDR", pngU32(w) .. pngU32(h) .. "\8\6\0\0\0")
+      .. pngChunk("IDAT", idat)
+      .. pngChunk("IEND", "")
 
   local f, err = io.open(filePath, "wb")
   if not f then
@@ -2156,10 +1896,10 @@ local function writeImageAsPng(img, filePath, req)
   if not f then
     return nil, "cannot open file: " .. tostring(err)
   end
-  local ok, writeErr = pcall(function() f:write(pngData) end)
-  f:close()
-  if not ok then
-    return nil, "write failed: " .. tostring(writeErr)
+  local ok, writeErr = f:write(pngData)
+  local closed, closeErr = f:close()
+  if not ok or not closed then
+    return nil, "write failed: " .. tostring(writeErr or closeErr)
   end
 
   return true
@@ -2171,7 +1911,7 @@ end
 -- Render (frame export + encode)
 -- ============================================================================
 
-local function renderImageSequenceAndEncode(req)
+local function renderImageSequenceAndEncode(req, resources)
   local comp = self.Comp
 
   local renderStart = req.Time
@@ -2189,60 +1929,58 @@ local function renderImageSequenceAndEncode(req)
     local attrs = comp:GetAttrs()
     if attrs then compName = attrs.COMPS_Name or "(unknown)" end
   end
-  fuseLog("[render] Rendering frames", startFrame, "-", endFrame, "(" .. totalFrames .. " total, comp:", tostring(compName) .. ")")
+  fuseLog("[render] Rendering frames", startFrame, "-", endFrame, "(" .. totalFrames .. " total, comp:",
+    tostring(compName) .. ")")
 
   local outputValue = InOutputPath:GetValue(req)
   local outputPath = outputValue and outputValue.Value or ""
   if outputPath == "" then
-    outputPath = os.tmpname()
-    fuseLog("[render] [WARNING] Output path is empty! Using temp path:", outputPath)
-    fuseLog("[render] [WARNING] Set the output path in the Path control before rendering.")
+    error("Set the output path before exporting.")
   end
   local mappedOutputPath = comp:MapPath(outputPath)
   local presetDefinition = getPresetDefinition(req)
   local basePath, outputExtension = splitBaseAndExtension(mappedOutputPath)
   local ok, reason = isValidShellPath(basePath)
   if not ok then
-    fuseLog("[render] [ERROR] Invalid output path '" .. tostring(basePath) .. "': " .. tostring(reason))
-    return
+    error("Invalid output path: " .. tostring(reason))
   end
   local isPngSequence = presetDefinition.codec == "png_sequence"
   local isGifskiRender = presetDefinition.codec == "gif_gifski"
-  local ffmpegExe = findFfmpegPath()
+  local ffmpegExe
+  if not isPngSequence and not isGifskiRender then ffmpegExe = findFfmpegPath() end
   if not isPngSequence and not isGifskiRender and not ffmpegExe then
-    fuseLog("[render] [ERROR] FFmpeg not found. Export cancelled.")
-    return
+    error("FFmpeg not found on PATH.")
   end
   if isGifskiRender and not findGifskiPath() then
-    fuseLog("[render] [ERROR] Gifski not found. Export cancelled.")
-    return
+    error("Gifski not found on PATH.")
   end
 
   local canTwoPass = isTwoPassCodec(presetDefinition.codec)
   local twoPass = canTwoPass and InTwoPass:GetValue(req).Value >= 0.5
   local sequenceExtension = ".png"
   local frameWidth = getFrameWidth(endFrame)
-  local ffmpegCommand, gifPaletteGenCmd, gifPaletteInputArg = buildTerminalCommand(comp, req, startFrame, endFrame, basePath, sequenceExtension, frameWidth)
-
-  -- Create a temp folder for frame files, then patch the command to use it
-  -- (skip for PNG sequence — those ARE the final output)
-  local frameFolder = basePath .. "_frames"
-  local frameFmt = "%0" .. frameWidth .. "d"
+  local workBase = basePath
+  local frameFolder
   if not isPngSequence then
-    local mkdirCmd = IS_WINDOWS and ('if not exist "' .. frameFolder .. '" mkdir "' .. frameFolder .. '"')
-                               or ('mkdir -p "' .. frameFolder .. '"')
-    runCommandFullBlocking(mkdirCmd)
-    local oldSeq = basePath .. "_" .. frameFmt .. sequenceExtension
-    local newSeq = (frameFolder .. getPathSeparator() .. frameFmt .. sequenceExtension):gsub("%%", "%%%%")
-    local escOldSeq = oldSeq:gsub("%%", "%%%%")
-    ffmpegCommand = ffmpegCommand:gsub(escOldSeq, newSeq, 1)
-    -- Also patch the palette gen command if present
-    if gifPaletteGenCmd then
-      gifPaletteGenCmd = gifPaletteGenCmd:gsub(escOldSeq, newSeq, 1)
+    -- Only remove a directory that this export created exclusively.
+    local temporary = os.tmpname()
+    local token = temporary:match("([^/\\\\]+)$")
+    os.remove(temporary)
+    frameFolder = basePath .. "_frames_" .. token
+    local created
+    if IS_WINDOWS then
+      created = _K32.CreateDirectoryA(frameFolder, nil) ~= 0
+    else
+      created = _libc.mkdir(frameFolder, 448) == 0
     end
-    if gifPaletteInputArg then
-      gifPaletteInputArg = gifPaletteInputArg:gsub(escOldSeq, newSeq, 1)
-    end
+    if not created then error("Cannot create export directory: " .. frameFolder) end
+    resources.frameFolder = frameFolder
+    workBase = frameFolder .. getPathSeparator() .. "frame"
+  end
+  local ffmpegCommand, gifPaletteGenCmd, gifPaletteInputArg
+  if not isPngSequence then
+    ffmpegCommand, gifPaletteGenCmd, gifPaletteInputArg = buildTerminalCommand(
+      comp, req, startFrame, endFrame, basePath, sequenceExtension, frameWidth, workBase)
   end
 
   -- Gifski: replace quoted sequence pattern with per-frame file paths
@@ -2271,32 +2009,34 @@ local function renderImageSequenceAndEncode(req)
       local gsFps = InFramerate:GetValue(req).Value
       if gsFps <= 0 then gsFps = getCompFrameRate(self.Comp) end
       local compFps = getCompFrameRate(self.Comp)
-      local gsStep = 1
-      if gsFps > 0 and gsFps < compFps then
-        gsStep = math.max(1, math.floor(compFps / gsFps + 0.5))
-      end
-      local sep = getPathSeparator()
       local frameFmt = "%0" .. frameWidth .. "d"
       local frameList = {}
-      for fr = startFrame, endFrame, gsStep do
-        frameList[#frameList + 1] = string.format('"%s' .. sep .. frameFmt .. '%s"', frameFolder, fr, sequenceExtension)
+      local outputFrames = math.max(1, math.ceil(totalFrames * gsFps / compFps))
+      for index = 0, outputFrames - 1 do
+        local fr = math.min(endFrame, startFrame + math.floor(index * compFps / gsFps))
+        frameList[#frameList + 1] = string.format('"%s_' .. frameFmt .. '%s"', workBase, fr, sequenceExtension)
       end
       local gsInput = table.concat(frameList, " ")
-      ffmpegCommand = string.format('%s -o "%s" -r %g -Q %d %s%s%s--repeat 0 %s',
-        gifskiExe, basePath .. presetDefinition.outputExtension, gsFps, gsQuality, gsFlags, gsWidthArg, gsHeightArg, gsInput)
+      if IS_WINDOWS and #gsInput + #basePath + 512 > 8191 then
+        error("Gifski input list exceeds the Windows command limit; shorten the range or use FFmpeg GIF.")
+      end
+      ffmpegCommand = string.format('%s -o "%s" -r %g -Q %d %s%s%s--no-sort --repeat 0 %s',
+        gifskiExe, basePath .. presetDefinition.outputExtension, gsFps, gsQuality, gsFlags, gsWidthArg, gsHeightArg,
+        gsInput)
     end
   end
 
   -- Inject the palette PNG input argument before -frames:v so ffmpeg doesn't
   -- mistake -frames:v for an input option on the palette file.
   if gifPaletteInputArg then
-    ffmpegCommand = ffmpegCommand:gsub("%-frames:v ", gifPaletteInputArg .. " -frames:v ", 1)
+    ffmpegCommand = ffmpegCommand:gsub("%-frames:v ", function() return gifPaletteInputArg .. " -frames:v " end, 1)
   end
 
   local ffmpegPassOneCommand = ""
   if twoPass then
-    local passLogFile = basePath .. "_ffmpeg2pass"
-    local passOneCmd = string.gsub(ffmpegCommand, "%-pass 2 %-passlogfile \"[^\"]*\"", string.format("-pass 1 -passlogfile \"%s\" -an", passLogFile))
+    local passLogFile = workBase .. "_ffmpeg2pass"
+    local passOneCmd = string.gsub(ffmpegCommand, "%-pass 2 %-passlogfile \"[^\"]*\"",
+      function() return string.format("-pass 1 -passlogfile \"%s\" -an", passLogFile) end)
     -- Validate that the gsub actually matched — pass 1 silently doing nothing is a crash later
     if passOneCmd == ffmpegCommand then
       fuseLog("[render] [ERROR] Two-pass substitution failed: pattern '%%-pass 2 -passlogfile...' not found")
@@ -2309,77 +2049,55 @@ local function renderImageSequenceAndEncode(req)
 
   InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, totalFrames, "Starting...") })
 
-  -- Frame rendering loop (skip if Keep Frames is on and frames already exist)
-  local keepFrames = not isPngSequence and InKeepFrames:GetValue(req).Value >= 0.5
-  local needFrames = true
-  if keepFrames and frameFolder then
-    -- Quick check: does frame 0 file exist?
-    local firstFramePath = buildFramePath(basePath, frameFolder, startFrame, sequenceExtension, isPngSequence, frameWidth)
-    local f = io.open(firstFramePath, "r")
-    if f then
-      f:close()
-      needFrames = false
-      fuseLog("[render] Frames already exist in", frameFolder, "— skipping render")
-    end
-  end
-
-  if needFrames then
-  -- Pre-compute frame path format string (avoid buildFramePath call in hot loop)
-  local frameFmt = "%0" .. frameWidth .. "d"
-  local framePathFormat
-  if isPngSequence then
-    framePathFormat = basePath .. "_" .. frameFmt .. sequenceExtension
-  else
-    framePathFormat = frameFolder .. getPathSeparator() .. frameFmt .. sequenceExtension
-  end
+  -- Keep the path out of the format string (filenames may contain percent signs).
+  local framePathFormat = "%s_%0" .. frameWidth .. "d%s"
   -- Throttle progress bar updates to ~20 steps
   local progressInterval = math.max(1, math.floor(totalFrames / 20))
   for frame = startFrame, endFrame do
     -- Check cancel flag (uses self:GetData + InCancelBtn:GetValue for cross-callback visibility)
     if isCancelRequested(self, req) then
       fuseLog("[render] Cancel requested, stopping frame render at frame", frame)
-      InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml((frame - startFrame) / totalFrames, frame, totalFrames, "Cancelling...") })
-      if not isPngSequence and frameFolder then
-        removeDirectory(frameFolder)
-      end
+      InProgressBar:SetAttrs({
+        LINKS_Name = buildProgressHtml((frame - startFrame) / totalFrames, frame, totalFrames,
+          "Cancelling...")
+      })
+
       return
     end
 
     local frameImage = InImage:GetSource(frame, REQF_SecondaryTime, REQF_SecondaryTime)
 
     if frameImage then
-      local framePath = string.format(framePathFormat, frame)
+      local framePath = string.format(framePathFormat, workBase, frame, sequenceExtension)
 
-      local ok, pngErr = writeImageAsPng(frameImage, framePath, req)
+      local ok, pngErr = writeImageAsPng(frameImage, framePath)
       if not ok then
         fuseLog("[render] ERROR: PNG write failed at frame", frame, "path:", framePath, "error:", tostring(pngErr))
-        InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, totalFrames, "ERROR: Frame " .. frame .. " write failed") })
-        if not isPngSequence and frameFolder then
-          removeDirectory(frameFolder)
-        end
+        InProgressBar:SetAttrs({
+          LINKS_Name = buildProgressHtml(0, 0, totalFrames,
+            "ERROR: Frame " .. frame .. " write failed")
+        })
+
         return
       end
-
     else
-      fuseLog("[render] ERROR: InImage:GetSource returned nil at frame", frame, "(range:", startFrame, "-", endFrame, ") - aborting render")
-      InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, totalFrames, "ERROR: Frame " .. frame .. " source nil") })
-      -- Clean up temp folder — don't leave orphaned frame files
-      if not isPngSequence and frameFolder then
-        removeDirectory(frameFolder)
-      end
+      fuseLog("[render] ERROR: InImage:GetSource returned nil at frame", frame, "(range:", startFrame, "-", endFrame,
+        ") - aborting render")
+      InProgressBar:SetAttrs({
+        LINKS_Name = buildProgressHtml(0, 0, totalFrames,
+          "ERROR: Frame " .. frame .. " source nil")
+      })
       return
     end
 
     local doneFrames = frame - startFrame + 1
     if frame == startFrame or frame == endFrame or doneFrames % progressInterval == 0 then
-      InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(doneFrames / totalFrames, doneFrames, totalFrames, "Rendering frames...") })
-      -- Periodic frame status update
-      if not isPngSequence and frameFolder and doneFrames % (progressInterval * 2) == 0 then
-        refreshFrameStatus(basePath)
-      end
+      InProgressBar:SetAttrs({
+        LINKS_Name = buildProgressHtml(doneFrames / totalFrames, doneFrames, totalFrames,
+          "Rendering frames...")
+      })
     end
   end
-  end  -- end needFrames
 
 
   if isPngSequence then
@@ -2387,50 +2105,51 @@ local function renderImageSequenceAndEncode(req)
   else
     InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(1, totalFrames, totalFrames, "Encoding...") })
 
-    -- Refresh output file size before encoding (may show previous run's file)
-    local encExt = presetDefinition.outputExtension or ".mp4"
-    refreshOutputFileSize(basePath, encExt)
-
     -- FFmpeg encode path (original GIF palette pipeline or any other format)
 
     -- Check cancel before encoding
     if isCancelRequested(self, req) then
       fuseLog("[render] Cancel requested before encoding")
       InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, totalFrames, "Cancelled.") })
-      if not isPngSequence and frameFolder then removeDirectory(frameFolder) end
+
       return
     end
 
     -- GIF two-pass palette: generate palette PNG before main encode
     if gifPaletteGenCmd then
       InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0.25, totalFrames, totalFrames, "Generating palette...") })
-      local paletteGenExe = gifPaletteGenCmd:gsub("^ffmpeg ", ffmpegExe .. " ", 1)
+      local paletteGenExe = gifPaletteGenCmd:gsub("^ffmpeg ", function() return ffmpegExe .. " " end, 1)
       fuseLog("[palette-gen] " .. paletteGenExe)
       local paletteOut, paletteExitCode = runCommandFullBlocking(paletteGenExe)
       if paletteOut == nil then
         fuseLog("[render] [ERROR] ffmpeg palette generation failed to start (command: " .. paletteGenExe .. ")")
-        InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, totalFrames, "ERROR: Palette generation failed to start") })
-        if not isPngSequence and frameFolder then removeDirectory(frameFolder) end
+        InProgressBar:SetAttrs({
+          LINKS_Name = buildProgressHtml(0, 0, totalFrames,
+            "ERROR: Palette generation failed to start")
+        })
+
         return
       end
       if paletteExitCode ~= 0 then
-        fuseLog("[render] [ERROR] ffmpeg palette generation exited with code", paletteExitCode, "(command: " .. paletteGenExe .. ")")
+        fuseLog("[render] [ERROR] ffmpeg palette generation exited with code", paletteExitCode,
+          "(command: " .. paletteGenExe .. ")")
         fuseLog("[palette-gen stderr]\n" .. paletteOut)
         InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, totalFrames, "ERROR: Palette generation failed") })
-        if not isPngSequence and frameFolder then removeDirectory(frameFolder) end
+
         return
       end
       if #paletteOut > 0 then
         fuseLog("[palette-gen]\n" .. paletteOut)
       end
-      local palettePath = basePath .. "_palette.png"
-      local paletteFile = io.open(palettePath, "r")
+      local palettePath = workBase .. "_palette.png"
+      local paletteFile = io.open(palettePath, "rb")
       if paletteFile then
         paletteFile:close()
       else
-        fuseLog("[render] [ERROR] Palette PNG was not created:", palettePath, "(ffmpeg exited with code", paletteExitCode, "but no output file)")
+        fuseLog("[render] [ERROR] Palette PNG was not created:", palettePath, "(ffmpeg exited with code", paletteExitCode,
+          "but no output file)")
         InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, totalFrames, "ERROR: Palette file missing") })
-        if not isPngSequence and frameFolder then removeDirectory(frameFolder) end
+
         return
       end
     end
@@ -2439,13 +2158,13 @@ local function renderImageSequenceAndEncode(req)
     if isCancelRequested(self, req) then
       fuseLog("[render] Cancel requested before pass 1")
       InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, totalFrames, "Cancelled.") })
-      if not isPngSequence and frameFolder then removeDirectory(frameFolder) end
+
       return
     end
 
     if twoPass then
       InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0.5, totalFrames, totalFrames, "Pass 1 / 2...") })
-      ffmpegPassOneCommand = ffmpegPassOneCommand:gsub("^ffmpeg ", ffmpegExe .. " ", 1)
+      ffmpegPassOneCommand = ffmpegPassOneCommand:gsub("^ffmpeg ", function() return ffmpegExe .. " " end, 1)
       fuseLog("[pass1] " .. ffmpegPassOneCommand)
       local out1, exit1 = runCommandFullBlocking(ffmpegPassOneCommand)
       if out1 == nil then
@@ -2463,10 +2182,10 @@ local function renderImageSequenceAndEncode(req)
         fuseLog("[ffmpeg pass1 stderr]\n" .. out1)
       end
       -- Verify pass log was created — if not, something went wrong in pass 1
-      local passLogFile = basePath .. "_ffmpeg2pass"
+      local passLogFile = workBase .. "_ffmpeg2pass"
       local logCheck = IS_WINDOWS
-        and (runCommandFullBlocking(string.format('if exist "%s-0.log" echo 1', passLogFile)) or "")
-        or (runCommandFullBlocking(string.format('test -f "%s-0.log" && echo 1', passLogFile)) or "")
+          and (runCommandFullBlocking(string.format('if exist "%s-0.log" echo 1', passLogFile)) or "")
+          or (runCommandFullBlocking(string.format('test -f "%s-0.log" && echo 1', passLogFile)) or "")
       if not logCheck:find("1") then
         fuseLog("[render] [ERROR] ffmpeg pass 1 produced no pass log at", passLogFile .. "-0.log")
         fuseLog("[render] Command was:", ffmpegPassOneCommand:sub(1, 500))
@@ -2476,7 +2195,9 @@ local function renderImageSequenceAndEncode(req)
       InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0.75, totalFrames, totalFrames, "Pass 2 / 2...") })
     end
 
-    ffmpegCommand = ffmpegCommand:gsub("^ffmpeg ", ffmpegExe .. " ", 1)
+    if not isGifskiRender then
+      ffmpegCommand = ffmpegCommand:gsub("^ffmpeg ", function() return ffmpegExe .. " " end, 1)
+    end
     if ffmpegCommand == "" then
       fuseLog("[render] [ERROR] Resolved ffmpeg command is empty")
       return
@@ -2485,7 +2206,7 @@ local function renderImageSequenceAndEncode(req)
     if isCancelRequested(self, req) then
       fuseLog("[render] Cancel requested before main encode")
       InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, totalFrames, "Cancelled.") })
-      if not isPngSequence and frameFolder then removeDirectory(frameFolder) end
+
       return
     end
 
@@ -2495,8 +2216,6 @@ local function renderImageSequenceAndEncode(req)
     if ffmpegOutput == nil then
       fuseLog("[render] [ERROR] ffmpeg main encode failed to start (command: " .. ffmpegCommand:sub(1, 200) .. ")")
       InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, totalFrames, "ERROR: Encode failed to start") })
-      -- Clean up frame files on failure
-      if not isPngSequence and frameFolder then removeDirectory(frameFolder) end
       return
     end
     if ffmpegExitCode ~= 0 then
@@ -2506,54 +2225,17 @@ local function renderImageSequenceAndEncode(req)
       fuseLog("[ffmpeg]\n" .. ffmpegOutput)
     end
     if ffmpegExitCode ~= 0 then
-      InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, totalFrames, "ERROR: Encode failed (exit " .. ffmpegExitCode .. ")") })
-      if not isPngSequence and frameFolder then removeDirectory(frameFolder) end
+      InProgressBar:SetAttrs({
+        LINKS_Name = buildProgressHtml(0, 0, totalFrames,
+          "ERROR: Encode failed (exit " .. ffmpegExitCode .. ")")
+      })
+
       return -- don't report success
     end
 
-    -- Refresh output file size after successful encode
-    refreshOutputFileSize(basePath, encExt)
-
-    if twoPass then
-      local passLogFile = basePath .. "_ffmpeg2pass"
-      local ok, err = os.remove(passLogFile .. ".log")
-      if not ok then fuseLog("[render] Warning: could not remove " .. passLogFile .. ".log: " .. tostring(err)) end
-      ok, err = os.remove(passLogFile .. "-0.log")
-      if not ok then fuseLog("[render] Warning: could not remove " .. passLogFile .. "-0.log: " .. tostring(err)) end
-      ok, err = os.remove(passLogFile .. "-0.log.mbtree")
-      if not ok then fuseLog("[render] Warning: could not remove " .. passLogFile .. "-0.log.mbtree: " .. tostring(err)) end
-      ok, err = os.remove(passLogFile .. "-0.log.cutree")
-      if not ok then fuseLog("[render] Warning: could not remove " .. passLogFile .. "-0.log.cutree: " .. tostring(err)) end
-    end
-
-    -- Clean up GIF two-pass palette temp file
-    if gifPaletteGenCmd then
-      local palettePath = basePath .. "_palette.png"
-      local ok, err = os.remove(palettePath)
-      if not ok then fuseLog("[render] Warning: could not remove palette " .. palettePath .. ": " .. tostring(err)) end
-    end
-
-    -- Remove the entire temp frame folder (not used for PNG sequence)
-    if not keepFrames and frameFolder then
-      local deadline = os.time() + 3
-      local removed = false
-      while os.time() < deadline do
-        removeDirectory(frameFolder)
-        local f = io.open(frameFolder, "r")
-        if not f then
-          removed = true
-          break
-        end
-        f:close()
-        sleep(0.3)
-      end
-      if not removed then
-        fuseLog("[render] Warning: could not remove temp folder " .. frameFolder)
-      end
-    end  -- end if not keepFrames
-
     InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(1, totalFrames, totalFrames, "Done.") })
   end
+  return true
 end
 
 -- ============================================================================
@@ -2561,44 +2243,48 @@ end
 -- ============================================================================
 
 function Create()
-	self:RemoveControlPage("Controls")
-	local controlsPage = self:AddControlPage("Controls", { CTID_DIB_ID = 'Icons.Tools.Tabs.Image' })
+  self:RemoveControlPage("Controls")
+  local controlsPage = self:AddControlPage("Controls", { CTID_DIB_ID = 'Icons.Tools.Tabs.Image' })
 
   -- ══════════════════════════════════════════════════════════════
   -- BANNER — FFmpeg status + download
   -- ══════════════════════════════════════════════════════════════
   InFFmpegStatus = self:AddInput(findFfmpegPath()
-    and "<center><span style='color:#5a9e6f;'>&#9679;</span> <b style='color:#8a94a0;'>FFmpeg:</b> <span style='color:#b0b8c0;'>Found</span></center>"
-    or "<center><span style='color:#c46b6b;'>&#9679;</span> <b style='color:#8a94a0;'>FFmpeg:</b> <span style='color:#c8896a;'>Not Found</span></center>", "FFmpegStatus", {
-    LINKID_DataType     = "Text",
-    INPID_InputControl  = "LabelControl",
-    IC_ControlPage      = -1,
-    INP_DoNotifyChanged = false,
-    INP_InitialNotify   = false,
-    INP_External        = false,
-    INP_Passive         = true,
-    INP_Active          = false,
-    IC_NoLabel          = true,
-    IC_NoReset          = true,
-  })
+    and
+    "<center><span style='color:#5a9e6f;'>&#9679;</span> <b style='color:#8a94a0;'>FFmpeg:</b> <span style='color:#b0b8c0;'>Found</span></center>"
+    or
+    "<center><span style='color:#c46b6b;'>&#9679;</span> <b style='color:#8a94a0;'>FFmpeg:</b> <span style='color:#c8896a;'>Not Found</span></center>",
+    "FFmpegStatus", {
+      LINKID_DataType     = "Text",
+      INPID_InputControl  = "LabelControl",
+      IC_ControlPage      = -1,
+      INP_DoNotifyChanged = false,
+      INP_InitialNotify   = false,
+      INP_External        = false,
+      INP_Passive         = true,
+      INP_Active          = false,
+      IC_NoLabel          = true,
+      IC_NoReset          = true,
+      ICD_Width           = 0.5,
+    })
 
   -- ══════════════════════════════════════════════════════════════
   -- SECTION — Output
   -- ══════════════════════════════════════════════════════════════
   InSectionOutput = self:AddInput("", "SectionOutput", {
-    LINKID_DataType    = "Number",
-    INPID_InputControl = "LabelControl",
-    LINKS_Name         = "<b style='color:#b8c8d8;'>Output</b>",
-    INP_Default        = 1.0,
+    LINKID_DataType     = "Number",
+    INPID_InputControl  = "LabelControl",
+    LINKS_Name          = "<b style='color:#b8c8d8;'>Output</b>",
+    INP_Default         = 1.0,
     LBLC_DropDownButton = true,
-    LBLC_NumInputs     = 3,
-    LBLC_NestLevel     = 1,
+    LBLC_NumInputs      = 3,
+    LBLC_NestLevel      = 1,
     INP_DoNotifyChanged = false,
-    INP_InitialNotify  = false,
-    INP_External       = false,
-    INP_Passive        = true,
-    IC_NoLabel         = true,
-    IC_NoReset         = true,
+    INP_InitialNotify   = false,
+    INP_External        = false,
+    INP_Passive         = true,
+    IC_NoLabel          = true,
+    IC_NoReset          = true,
   })
 
   InOutputPath = self:AddInput("📁 Path", "OutputPath", {
@@ -2641,19 +2327,19 @@ function Create()
   -- SECTION — Frame
   -- ══════════════════════════════════════════════════════════════
   InSectionFrame = self:AddInput("", "SectionFrame", {
-    LINKID_DataType    = "Number",
-    INPID_InputControl = "LabelControl",
-    LINKS_Name         = "<b style='color:#c8b8d8;'>Frame</b>",
-    INP_Default        = 1.0,
+    LINKID_DataType     = "Number",
+    INPID_InputControl  = "LabelControl",
+    LINKS_Name          = "<b style='color:#c8b8d8;'>Frame</b>",
+    INP_Default         = 1.0,
     LBLC_DropDownButton = true,
-    LBLC_NumInputs     = 5,
-    LBLC_NestLevel     = 1,
+    LBLC_NumInputs      = 5,
+    LBLC_NestLevel      = 1,
     INP_DoNotifyChanged = false,
-    INP_InitialNotify  = false,
-    INP_External       = false,
-    INP_Passive        = true,
-    IC_NoLabel         = true,
-    IC_NoReset         = true,
+    INP_InitialNotify   = false,
+    INP_External        = false,
+    INP_Passive         = true,
+    IC_NoLabel          = true,
+    IC_NoReset          = true,
   })
 
   InResolutionMode = self:AddInput("Resolution", "ResolutionMode", {
@@ -2728,19 +2414,19 @@ function Create()
   -- SECTION — Encoder
   -- ══════════════════════════════════════════════════════════════
   InSectionEncoder = self:AddInput("", "SectionEncoder", {
-    LINKID_DataType    = "Number",
-    INPID_InputControl = "LabelControl",
-    LINKS_Name         = "<b style='color:#d0c8b0;'>Encoder</b>",
-    INP_Default        = 1.0,
+    LINKID_DataType     = "Number",
+    INPID_InputControl  = "LabelControl",
+    LINKS_Name          = "<b style='color:#d0c8b0;'>Encoder</b>",
+    INP_Default         = 1.0,
     LBLC_DropDownButton = true,
-    LBLC_NumInputs     = 5,  -- updated dynamically below
-    LBLC_NestLevel     = 1,
+    LBLC_NumInputs      = 5, -- updated dynamically below
+    LBLC_NestLevel      = 1,
     INP_DoNotifyChanged = false,
-    INP_InitialNotify  = false,
-    INP_External       = false,
-    INP_Passive        = true,
-    IC_NoLabel         = true,
-    IC_NoReset         = true,
+    INP_InitialNotify   = false,
+    INP_External        = false,
+    INP_Passive         = true,
+    IC_NoLabel          = true,
+    IC_NoReset          = true,
   })
 
   -- One combo per codec so items don't leak across format switches.
@@ -2822,19 +2508,19 @@ function Create()
   -- SECTION — Rate Control
   -- ══════════════════════════════════════════════════════════════
   InSectionRate = self:AddInput("", "SectionRate", {
-    LINKID_DataType    = "Number",
-    INPID_InputControl = "LabelControl",
-    LINKS_Name         = "<b style='color:#b0c8d0;'>Rate Control</b>",
-    INP_Default        = 1.0,
+    LINKID_DataType     = "Number",
+    INPID_InputControl  = "LabelControl",
+    LINKS_Name          = "<b style='color:#b0c8d0;'>Rate Control</b>",
+    INP_Default         = 1.0,
     LBLC_DropDownButton = true,
-    LBLC_NumInputs     = 7,
-    LBLC_NestLevel     = 1,
+    LBLC_NumInputs      = 7,
+    LBLC_NestLevel      = 1,
     INP_DoNotifyChanged = false,
-    INP_InitialNotify  = false,
-    INP_External       = false,
-    INP_Passive        = true,
-    IC_NoLabel         = true,
-    IC_NoReset         = true,
+    INP_InitialNotify   = false,
+    INP_External        = false,
+    INP_Passive         = true,
+    IC_NoLabel          = true,
+    IC_NoReset          = true,
   })
 
   InRateControlMode = self:AddInput("Rate Control", "RateControlMode", {
@@ -2928,20 +2614,20 @@ function Create()
   -- SECTION — WebM
   -- ══════════════════════════════════════════════════════════════
   InSectionWebM = self:AddInput("", "SectionWebM", {
-    LINKID_DataType    = "Number",
-    INPID_InputControl = "LabelControl",
-    LINKS_Name         = "<b style='color:#d0b8c0;'>WebM</b>",
-    INP_Default        = 1.0,
+    LINKID_DataType     = "Number",
+    INPID_InputControl  = "LabelControl",
+    LINKS_Name          = "<b style='color:#d0b8c0;'>WebM</b>",
+    INP_Default         = 1.0,
     LBLC_DropDownButton = true,
-    LBLC_NumInputs     = 1,
-    LBLC_NestLevel     = 1,
+    LBLC_NumInputs      = 1,
+    LBLC_NestLevel      = 1,
     INP_DoNotifyChanged = false,
-    INP_InitialNotify  = false,
-    INP_External       = false,
-    INP_Passive        = true,
-    IC_NoLabel         = true,
-    IC_NoReset         = true,
-    IC_Visible         = false,
+    INP_InitialNotify   = false,
+    INP_External        = false,
+    INP_Passive         = true,
+    IC_NoLabel          = true,
+    IC_NoReset          = true,
+    IC_Visible          = false,
   })
 
   InVP9Alpha = self:AddInput("VP9 Alpha Channel", "VP9Alpha", {
@@ -2959,20 +2645,20 @@ function Create()
   -- SECTION — GIF
   -- ══════════════════════════════════════════════════════════════
   InSectionGif = self:AddInput("", "SectionGif", {
-    LINKID_DataType    = "Number",
-    INPID_InputControl = "LabelControl",
-    LINKS_Name         = "<b style='color:#c8d0b8;'>GIF</b>",
-    INP_Default        = 1.0,
+    LINKID_DataType     = "Number",
+    INPID_InputControl  = "LabelControl",
+    LINKS_Name          = "<b style='color:#c8d0b8;'>GIF</b>",
+    INP_Default         = 1.0,
     LBLC_DropDownButton = true,
-    LBLC_NumInputs     = 5,
-    LBLC_NestLevel     = 1,
+    LBLC_NumInputs      = 5,
+    LBLC_NestLevel      = 1,
     INP_DoNotifyChanged = false,
-    INP_InitialNotify  = false,
-    INP_External       = false,
-    INP_Passive        = true,
-    IC_NoLabel         = true,
-    IC_NoReset         = true,
-    IC_Visible         = false,
+    INP_InitialNotify   = false,
+    INP_External        = false,
+    INP_Passive         = true,
+    IC_NoLabel          = true,
+    IC_NoReset          = true,
+    IC_Visible          = false,
   })
 
   InGifAlpha = self:AddInput("Alpha (1-bit)", "GifAlpha", {
@@ -3035,20 +2721,20 @@ function Create()
   -- SECTION — Gifski
   -- ══════════════════════════════════════════════════════════════
   InSectionGifski = self:AddInput("", "SectionGifski", {
-    LINKID_DataType    = "Number",
-    INPID_InputControl = "LabelControl",
-    LINKS_Name         = "<b style='color:#d0c0b8;'>Gifski</b>",
-    INP_Default        = 1.0,
+    LINKID_DataType     = "Number",
+    INPID_InputControl  = "LabelControl",
+    LINKS_Name          = "<b style='color:#d0c0b8;'>Gifski</b>",
+    INP_Default         = 1.0,
     LBLC_DropDownButton = true,
-    LBLC_NumInputs     = 3,
-    LBLC_NestLevel     = 1,
+    LBLC_NumInputs      = 3,
+    LBLC_NestLevel      = 1,
     INP_DoNotifyChanged = false,
-    INP_InitialNotify  = false,
-    INP_External       = false,
-    INP_Passive        = true,
-    IC_NoLabel         = true,
-    IC_NoReset         = true,
-    IC_Visible         = false,
+    INP_InitialNotify   = false,
+    INP_External        = false,
+    INP_Passive         = true,
+    IC_NoLabel          = true,
+    IC_NoReset          = true,
+    IC_Visible          = false,
   })
 
   InGifskiQuality = self:AddInput("Quality", "GifskiQuality", {
@@ -3097,20 +2783,20 @@ function Create()
   -- SECTION — WebP
   -- ══════════════════════════════════════════════════════════════
   InSectionWebP = self:AddInput("", "SectionWebP", {
-    LINKID_DataType    = "Number",
-    INPID_InputControl = "LabelControl",
-    LINKS_Name         = "<b style='color:#b8d0c0;'>WebP</b>",
-    INP_Default        = 1.0,
+    LINKID_DataType     = "Number",
+    INPID_InputControl  = "LabelControl",
+    LINKS_Name          = "<b style='color:#b8d0c0;'>WebP</b>",
+    INP_Default         = 1.0,
     LBLC_DropDownButton = true,
-    LBLC_NumInputs     = 5,
-    LBLC_NestLevel     = 1,
+    LBLC_NumInputs      = 5,
+    LBLC_NestLevel      = 1,
     INP_DoNotifyChanged = false,
-    INP_InitialNotify  = false,
-    INP_External       = false,
-    INP_Passive        = true,
-    IC_NoLabel         = true,
-    IC_NoReset         = true,
-    IC_Visible         = false,
+    INP_InitialNotify   = false,
+    INP_External        = false,
+    INP_Passive         = true,
+    IC_NoLabel          = true,
+    IC_NoReset          = true,
+    IC_Visible          = false,
   })
 
   InWebPAlpha = self:AddInput("Alpha", "WebPAlpha", {
@@ -3175,20 +2861,20 @@ function Create()
   -- SECTION — APNG
   -- ══════════════════════════════════════════════════════════════
   InSectionApng = self:AddInput("", "SectionApng", {
-    LINKID_DataType    = "Number",
-    INPID_InputControl = "LabelControl",
-    LINKS_Name         = "<b style='color:#c0b8d0;'>APNG</b>",
-    INP_Default        = 1.0,
+    LINKID_DataType     = "Number",
+    INPID_InputControl  = "LabelControl",
+    LINKS_Name          = "<b style='color:#c0b8d0;'>APNG</b>",
+    INP_Default         = 1.0,
     LBLC_DropDownButton = true,
-    LBLC_NumInputs     = 2,
-    LBLC_NestLevel     = 1,
+    LBLC_NumInputs      = 2,
+    LBLC_NestLevel      = 1,
     INP_DoNotifyChanged = false,
-    INP_InitialNotify  = false,
-    INP_External       = false,
-    INP_Passive        = true,
-    IC_NoLabel         = true,
-    IC_NoReset         = true,
-    IC_Visible         = false,
+    INP_InitialNotify   = false,
+    INP_External        = false,
+    INP_Passive         = true,
+    IC_NoLabel          = true,
+    IC_NoReset          = true,
+    IC_Visible          = false,
   })
 
   InApngCompressionLevel = self:AddInput("Compression", "ApngCompressionLevel", {
@@ -3225,77 +2911,12 @@ function Create()
   SLIDER_CONTROL_MAP.Width = InWidth
   SLIDER_CONTROL_MAP.Height = InHeight
 
-  -- ══════════════════════════════════════════════════════════════
-  -- Command Template + Export
-  -- ══════════════════════════════════════════════════════════════
-  InCommandTemplate = self:AddInput("Command Template", "CommandTemplate", {
-    INPID_InputControl = "TextEditControl",
-    LINKID_DataType = "Text",
-    LINKS_Name = "FFmpeg Command Template",
-    TEC_Lines = 2,
-    INP_DoNotifyChanged = true,
-    INP_External = false,
-    IC_NoLabel = true,
-    IC_NoReset = true,
-  })
-
   InEncodeButton = self:AddInput("Export", "EncodeButton", {
     LINKID_DataType     = "Number",
     INPID_InputControl  = "ButtonControl",
     INP_Default         = 0.0,
     INP_Integer         = true,
     INP_DoNotifyChanged = true,
-    IC_NoLabel = true,
-    IC_NoReset = true,
-  })
-
-  InKeepFrames = self:AddInput("Keep & Reuse Exported Frames", "KeepFrames", {
-    LINKID_DataType = "Number",
-    INPID_InputControl = "CheckboxControl",
-    INP_Integer = true,
-    INP_Default = 0,
-    INP_External = false,
-    IC_NoLabel = true,
-  })
-
-  -- ══════════════════════════════════════════════════════════════
-  -- Status & Actions
-  -- ══════════════════════════════════════════════════════════════
-  InOutputFileSize = self:AddInput("", "OutputFileSize", {
-    LINKID_DataType     = "Text",
-    INPID_InputControl  = "LabelControl",
-    LINKS_Name          = "<span style='color:#8a94a0;'>Output: —</span>",
-    INP_DoNotifyChanged = false,
-    INP_InitialNotify   = false,
-    INP_External        = false,
-    INP_Passive         = true,
-    INP_Active          = false,
-    IC_NoLabel          = true,
-    IC_NoReset          = true,
-    ICD_Width           = 0.5,
-  })
-
-  InFrameStatus = self:AddInput("", "FrameStatus", {
-    LINKID_DataType     = "Text",
-    INPID_InputControl  = "LabelControl",
-    LINKS_Name          = "<span style='color:#8a94a0;'>Frames: —</span>",
-    INP_DoNotifyChanged = false,
-    INP_InitialNotify   = false,
-    INP_External        = false,
-    INP_Passive         = true,
-    INP_Active          = false,
-    IC_NoLabel          = true,
-    IC_NoReset          = true,
-    ICD_Width           = 0.5,
-  })
-
-  InClearFramesBtn = self:AddInput("Clear Frames", "ClearFramesBtn", {
-    LINKID_DataType     = "Number",
-    INPID_InputControl  = "ButtonControl",
-    INP_Default         = 0.0,
-    INP_Integer         = true,
-    INP_DoNotifyChanged = true,
-    INP_InitialNotify   = false,
     IC_NoLabel          = true,
     IC_NoReset          = true,
     ICD_Width           = 0.5,
@@ -3315,6 +2936,9 @@ function Create()
     LINKS_Name          = "Cancel Export",
   })
 
+  -- ══════════════════════════════════════════════════════════════
+  -- Status & Actions
+  -- ══════════════════════════════════════════════════════════════
   InCancelRequest = self:AddInput("Cancel Request", "CancelRequest", {
     LINKID_DataType = "Number",
     INPID_InputControl = "SliderControl",
@@ -3335,9 +2959,12 @@ function Create()
     INP_Active          = false,
     IC_NoLabel          = true,
     IC_NoReset          = true,
+    ICD_Width           = 0.5,
     LINKS_Name          = findGifskiPath()
-      and "<center><span style='color:#5a9e6f;'>&#9679;</span> <b style='color:#8a94a0;'>Gifski:</b> <span style='color:#b0b8c0;'>Found</span></center>"
-      or "<center><span style='color:#c46b6b;'>&#9679;</span> <b style='color:#8a94a0;'>Gifski:</b> <span style='color:#c8896a;'>Not Found</span></center>",
+        and
+        "<center><span style='color:#5a9e6f;'>&#9679;</span> <b style='color:#8a94a0;'>Gifski:</b> <span style='color:#b0b8c0;'>Found</span></center>"
+        or
+        "<center><span style='color:#c46b6b;'>&#9679;</span> <b style='color:#8a94a0;'>Gifski:</b> <span style='color:#c8896a;'>Not Found</span></center>",
   })
 
   InSeparator = self:AddInput("", "Separator", {
@@ -3352,23 +2979,23 @@ function Create()
   })
 
   InProgressBar = self:AddInput("", "ProgressBar", {
-    LINKID_DataType     = "Text",
-    INPID_InputControl  = "LabelControl",
-    LINKS_Name          = buildProgressHtml(0, 0, 0),
-    INP_DoNotifyChanged = false,
-    INP_InitialNotify   = false,
-    INP_External        = false,
+    LINKID_DataType        = "Text",
+    INPID_InputControl     = "LabelControl",
+    LINKS_Name             = buildProgressHtml(0, 0, 0),
+    INP_DoNotifyChanged    = false,
+    INP_InitialNotify      = false,
+    INP_External           = false,
     INP_InteractivePassive = true,
-    INP_Active          = false,
-    IC_NoLabel          = true,
-    IC_NoReset          = true,
-    ICD_Width           = 1.0,
+    INP_Active             = false,
+    IC_NoLabel             = true,
+    IC_NoReset             = true,
+    ICD_Width              = 1.0,
   })
 
   InExportingLabel = self:AddInput("", "ExportingLabel", {
     LINKID_DataType     = "Text",
     INPID_InputControl  = "LabelControl",
-    LINKS_Name          = "<center><b style='color:#e8a050;'>Exporting - Don't Touch Anything!</b></center>",
+    LINKS_Name          = "<center><span style='color:#8a94a0;'>Output size: —</span></center>",
     INP_DoNotifyChanged = false,
     INP_InitialNotify   = false,
     INP_External        = false,
@@ -3376,7 +3003,7 @@ function Create()
     INP_Active          = false,
     IC_NoLabel          = true,
     IC_NoReset          = true,
-    IC_Visible          = false,
+    IC_Visible          = true,
     ICD_Width           = 1.0,
   })
 
@@ -3396,7 +3023,9 @@ function Create()
   InVersionFooter = self:AddInput("", "VersionFooter", {
     LINKID_DataType     = "Text",
     INPID_InputControl  = "LabelControl",
-    LINKS_Name          = '<p align=\'right\'><span style=\'color:#666666;\'><a href=\'https://tangenten.xyz\' style=\'color:#666666;\'>∿ <i>Tangenten</i>  &middot; ' .. footerVersion .. ' ∿</a></span></p>',
+    LINKS_Name          =
+        '<p align=\'right\'><span style=\'color:#666666;\'><a href=\'https://tangenten.xyz\' style=\'color:#666666;\'>∿ <i>Tangenten</i>  &middot; ' ..
+        footerVersion .. ' ∿</a></span></p>',
     INP_DoNotifyChanged = true,
     INP_InitialNotify   = false,
     INP_ForceNotify     = false,
@@ -3431,7 +3060,7 @@ function Create()
   -- Actions / Utilities
   -- ══════════════════════════════════════════════════════════════
 
-  InSupportNest                   = self:AddInput("Support", "SupportNest", {
+  InSupportNest    = self:AddInput("Support", "SupportNest", {
     IC_ControlPage      = 1,
     LINKID_DataType     = "Number",
     INPID_InputControl  = "LabelControl",
@@ -3443,10 +3072,10 @@ function Create()
     INP_Active          = false,
     LBLC_MultiLine      = false,
     LBLC_DropDownButton = true,
-    LBLC_NumInputs      = 3,
+    LBLC_NumInputs      = 2,
   })
 
-  InTestsBtn = self:AddInput("Run Tests", "TestsBtn", {
+  InReloadBtn      = self:AddInput("Reload Node", "ReloadBtn", {
     LINKID_DataType     = "Number",
     INPID_InputControl  = "ButtonControl",
     INP_Default         = 0.0,
@@ -3455,12 +3084,12 @@ function Create()
     INP_InitialNotify   = false,
     INP_External        = false,
     IC_ControlPage      = 1,
-    ICD_Width           = 0.33,
+    ICD_Width           = 0.5,
     IC_NoLabel          = true,
     IC_NoReset          = true,
   })
 
-  InReloadBtn = self:AddInput("Reload Node", "ReloadBtn", {
+  InWebsiteBtn     = self:AddInput("Visit Website", "WebsiteBtn", {
     LINKID_DataType     = "Number",
     INPID_InputControl  = "ButtonControl",
     INP_Default         = 0.0,
@@ -3469,26 +3098,12 @@ function Create()
     INP_InitialNotify   = false,
     INP_External        = false,
     IC_ControlPage      = 1,
-    ICD_Width           = 0.33,
+    ICD_Width           = 0.5,
     IC_NoLabel          = true,
     IC_NoReset          = true,
   })
 
-  InWebsiteBtn = self:AddInput("Visit Website", "WebsiteBtn", {
-    LINKID_DataType     = "Number",
-    INPID_InputControl  = "ButtonControl",
-    INP_Default         = 0.0,
-    INP_Integer         = true,
-    INP_DoNotifyChanged = true,
-    INP_InitialNotify   = false,
-    INP_External        = false,
-    IC_ControlPage      = 1,
-    ICD_Width           = 0.34,
-    IC_NoLabel          = true,
-    IC_NoReset          = true,
-  })
-
-  InLicenseNest = self:AddInput("License", "LicenseNest", {
+  InLicenseNest    = self:AddInput("License", "LicenseNest", {
     IC_ControlPage      = 1,
     LINKID_DataType     = "Number",
     INPID_InputControl  = "LabelControl",
@@ -3506,7 +3121,8 @@ function Create()
   InLicenseGeneral = self:AddInput("", "LicenseGeneral", {
     LINKID_DataType     = "Text",
     INPID_InputControl  = "LabelControl",
-    LINKS_Name          = "<span style='color:#aaa;'>This library is free software, licensed under <b>LGPL-2.1-or-later</b>. See License.txt for full terms.<br><br>It provides a user interface and workflow for video encoding using external command-line binaries. It does not contain, ship with, or license video codecs. Encoding requires FFmpeg and/or Gifski installed on the system PATH. You are responsible for complying with their respective licenses.</span>",
+    LINKS_Name          =
+    "<span style='color:#aaa;'>This library is free software, licensed under <b>LGPL-2.1-or-later</b>. See License.txt for full terms.<br><br>It provides a user interface and workflow for video encoding using external command-line binaries. It does not contain, ship with, or license video codecs. Encoding requires FFmpeg and/or Gifski installed on the system PATH. You are responsible for complying with their respective licenses.</span>",
     INP_DoNotifyChanged = false,
     INP_InitialNotify   = false,
     INP_External        = false,
@@ -3518,10 +3134,11 @@ function Create()
     LBLC_MultiLine      = true,
   })
 
-  InLicenseFFmpeg = self:AddInput("", "LicenseFfmpeg", {
+  InLicenseFFmpeg  = self:AddInput("", "LicenseFfmpeg", {
     LINKID_DataType     = "Text",
     INPID_InputControl  = "LabelControl",
-    LINKS_Name          = "This software utilizes the FFmpeg command-line tool for video and audio processing. FFmpeg is licensed under the <a href='https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html'>GNU Lesser General Public License v2.1 (LGPLv2.1)</a> / <a href='https://www.gnu.org/licenses/gpl-2.0.html'>GNU General Public License v2.0 (GPLv2.0)</a>. The original FFmpeg source code can be found at <a href='https://ffmpeg.org'>ffmpeg.org</a>.",
+    LINKS_Name          =
+    "This software utilizes the FFmpeg command-line tool for video and audio processing. FFmpeg is licensed under the <a href='https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html'>GNU Lesser General Public License v2.1 (LGPLv2.1)</a> / <a href='https://www.gnu.org/licenses/gpl-2.0.html'>GNU General Public License v2.0 (GPLv2.0)</a>. The original FFmpeg source code can be found at <a href='https://ffmpeg.org'>ffmpeg.org</a>.",
     INP_DoNotifyChanged = true,
     INP_InitialNotify   = false,
     INP_ForceNotify     = false,
@@ -3534,10 +3151,11 @@ function Create()
     LBLC_MultiLine      = true,
   })
 
-  InLicenseGifski = self:AddInput("", "LicenseGifski", {
+  InLicenseGifski  = self:AddInput("", "LicenseGifski", {
     LINKID_DataType     = "Text",
     INPID_InputControl  = "LabelControl",
-    LINKS_Name          = "This software utilizes the gifski command-line tool for GIF encoding. gifski is licensed under the <a href='https://www.gnu.org/licenses/agpl-3.0.html'>GNU Affero General Public License v3 (AGPLv3)</a> and its source code can be found at <a href='https://github.com/ImageOptim/gifski'>github.com/ImageOptim/gifski</a>.",
+    LINKS_Name          =
+    "This software utilizes the gifski command-line tool for GIF encoding. gifski is licensed under the <a href='https://www.gnu.org/licenses/agpl-3.0.html'>GNU Affero General Public License v3 (AGPLv3)</a> and its source code can be found at <a href='https://github.com/ImageOptim/gifski'>github.com/ImageOptim/gifski</a>.",
     INP_DoNotifyChanged = true,
     INP_InitialNotify   = false,
     INP_ForceNotify     = false,
@@ -3549,7 +3167,6 @@ function Create()
     IC_ControlPage      = 1,
     LBLC_MultiLine      = true,
   })
-
 end
 
 -- ============================================================================
@@ -3563,7 +3180,7 @@ function OnAddToFlow()
     local sliderVal = InFramerate:GetSource(0).Value or 0
     if sliderVal <= 0 and currentFps > 0 then
       InFramerate:SetSource(Number(currentFps), 0, 0)
-      InFramerate:SetAttrs({INP_Default = currentFps})
+      InFramerate:SetAttrs({ INP_Default = currentFps })
 
       fuseLog("[OnAddToFlow] Frame rate was 0, defaulted to comp rate:", currentFps)
     end
@@ -3601,23 +3218,13 @@ function OnAddToFlow()
     end
   end
 
-  -- Refresh output file size and frame status on tool creation
+  -- Refresh output file size on tool creation.
   local outputValue = InOutputPath:GetSource(0)
   local outputPath = outputValue and outputValue.Value or ""
   if outputPath ~= "" then
     local mappedPath = self.Comp and self.Comp:MapPath(outputPath) or outputPath
     local basePath, ext = splitBaseAndExtension(mappedPath)
     refreshOutputFileSize(basePath, ext)
-    refreshFrameStatus(basePath)
-  end
-
-  if FUSE_STARTUP_TESTS_ENABLED then
-    fuseLog("[OnAddToFlow] FUSE_TESTS_ENABLED is set, running self-test...")
-
-    local ok, err = pcall(Tests)
-    if not ok then
-      fuseLog("[TESTS] Tests crashed:", tostring(err))
-    end
   end
 end
 
@@ -3628,18 +3235,9 @@ function NotifyChanged(inp, param, time)
     return
   end
 
-  if inp == InTestsBtn and param.Value >= 0.5 then
-    local ok, err = pcall(Tests)
-    if not ok then
-      fuseLog("[TESTS] Tests crashed:", tostring(err))
-    end
-    inp:SetSource(Number(0), 0, 0)
-    return
-  end
-
   if inp == InReloadBtn and param.Value >= 0.5 then
     local execute = string.format([[
-      local tool = comp:FindTool("%s")
+      local tool = comp:FindTool(%q)
       if tool == nil then return end
       tool.ScriptReload[fu.TIME_UNDEFINED] = 1
       tool.ScriptReload[fu.TIME_UNDEFINED] = 0
@@ -3663,13 +3261,12 @@ function NotifyChanged(inp, param, time)
   end
 
   if inp == InOutputPath then
-    -- Refresh output file size and frame status when path changes
+    -- Refresh output file size when path changes.
     local outputPath = param.Value or ""
     if outputPath ~= "" then
       local mappedPath = self.Comp and self.Comp:MapPath(outputPath) or outputPath
       local basePath, ext = splitBaseAndExtension(mappedPath)
-      refreshOutputFileSize(basePath, ext)
-      refreshFrameStatus(basePath)
+      refreshOutputFileSize(basePath, (activePreset and activePreset.outputExtension) or ext)
     end
     return
   end
@@ -3729,29 +3326,9 @@ function NotifyChanged(inp, param, time)
     return
   end
 
-  if inp == InCommandTemplate then
-    updateActiveSliderTokens(param.Value)
-    return
-  end
-
   if inp == InEncodeButton and param.Value >= 0.5 then
     InEncodeActive:SetSource(Number(1), 0, 0)
     inp:SetSource(Number(0), 0, 0)
-    return
-  end
-
-  if inp == InClearFramesBtn and param.Value >= 0.5 then
-    inp:SetSource(Number(0), 0, 0)
-    local outputValue = InOutputPath:GetSource(0)
-    local outputPath = outputValue and outputValue.Value or ""
-    if outputPath ~= "" then
-      local mappedPath = self.Comp and self.Comp:MapPath(outputPath) or outputPath
-      local basePath, _ = splitBaseAndExtension(mappedPath)
-      local msg = clearFrameFolder(basePath)
-      fuseLog("[ClearFrames]", msg)
-      -- Refresh frame status
-      refreshFrameStatus(basePath)
-    end
     return
   end
 
@@ -3770,348 +3347,52 @@ end
 function Process(req)
   local img = InImage:GetValue(req)
   OutImage:Set(req, img)
+  if req:IsPreCalc() then return end
 
   if InEncodeActive:GetValue(req).Value > 0.5 then
     InEncodeActive:SetSource(Number(0), 0, 0)
     self:SetData("cancelRequested", false)
 
-    -- Refresh status before starting
+    -- Refresh output status before starting.
     local outputValue = InOutputPath:GetValue(req)
     local outputPath = outputValue and outputValue.Value or ""
     if outputPath ~= "" then
       local mappedPath = self.Comp and self.Comp:MapPath(outputPath) or outputPath
       local basePath, ext = splitBaseAndExtension(mappedPath)
       refreshOutputFileSize(basePath, ext)
-      refreshFrameStatus(basePath)
     end
 
-    InExportingLabel:SetAttrs({ IC_Visible = true })
+    InExportingLabel:SetAttrs({
+      IC_Visible = true,
+      LINKS_Name = "<center><b style='color:#e8a050;'>Exporting - Don't Touch Anything!</b></center>",
+    })
 
-    local ok, renderErr = pcall(renderImageSequenceAndEncode, req)
+    local resources = {}
+    local ok, renderSucceeded = pcall(renderImageSequenceAndEncode, req, resources)
+    if resources.frameFolder then removeDirectory(resources.frameFolder) end
     if not ok then
-      fuseLog("[Process] render crashed:", tostring(renderErr))
+      fuseLog("[Process] render crashed:", tostring(renderSucceeded))
       InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, 0, "ERROR: Render crashed") })
     else
       if isCancelRequested(self, req) then
         InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, 0, "Cancelled.") })
-      else
-        InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, 0) })
+      elseif renderSucceeded == true then
+        InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, 0, "Ready.") })
       end
     end
 
-    -- Refresh status after export
+    -- Refresh output status after export.
     local outputValue2 = InOutputPath:GetValue(req)
     local outputPath2 = outputValue2 and outputValue2.Value or ""
     if outputPath2 ~= "" then
       local mappedPath2 = self.Comp and self.Comp:MapPath(outputPath2) or outputPath2
-      local basePath2, ext2 = splitBaseAndExtension(mappedPath2)
-      refreshOutputFileSize(basePath2, ext2)
-      refreshFrameStatus(basePath2)
+      local basePath2 = splitBaseAndExtension(mappedPath2)
+      refreshOutputFileSize(basePath2, getPresetDefinition(req).outputExtension)
+    else
+      InExportingLabel:SetAttrs({ LINKS_Name = "<center><span style='color:#8a94a0;'>Output size: —</span></center>" })
     end
 
-    InExportingLabel:SetAttrs({ IC_Visible = false })
+    InExportingLabel:SetAttrs({ IC_Visible = true })
     self:SetData("cancelRequested", false)
   end
-
 end
-
--- ============================================================================
--- Tests
--- ============================================================================
-
-function Tests()
-  local p, f = 0, 0
-  local function ok(label, cond, detail)
-    if cond then p = p + 1; fuseLog("[TEST OK]", label)
-    else f = f + 1; fuseLog("[TEST FAIL]", label, detail or "")
-    end
-  end
-
-  fuseLog("========== TEST START ==========")
-
-  -- System / environment info
-  local uname = runCommandFullBlocking("uname -a 2>&1") or "unavailable"
-  local whichFF = runCommandFullBlocking("which ffmpeg 2>&1") or "not in PATH"
-  local archInfo = jit and (jit.arch or "unknown") or "unknown"
-  local luaVer = _VERSION or "unknown"
-  local isJit = jit and "yes (" .. (jit.version or "?") .. ")" or "no"
-  local isFusion = (self and self.Comp) and "yes" or "no"
-  local ffPath = findFfmpegPath() or "not found"
-
-  fuseLog("[sysinfo] IS_WINDOWS        =", tostring(IS_WINDOWS))
-  fuseLog("[sysinfo] _VERSION          =", luaVer)
-  fuseLog("[sysinfo] LuaJIT            =", isJit)
-  fuseLog("[sysinfo] Fusion context    =", isFusion)
-  fuseLog("[sysinfo] jit.arch          =", archInfo)
-  fuseLog("[sysinfo] package.config    =", package.config:gsub("\n","\\n"))
-  fuseLog("[sysinfo] uname -a          =", uname:gsub("%s+$",""))
-  fuseLog("[sysinfo] which ffmpeg      =", whichFF:gsub("%s+$",""))
-  fuseLog("[sysinfo] findFfmpegPath    =", ffPath)
-  fuseLog("[sysinfo] PLUGIN_VERSION    =", PLUGIN_VERSION)
-
-  -- —-- platform detection —--
-  ok("IS_WINDOWS boolean", type(IS_WINDOWS) == "boolean")
-  ok("package.config sep", package.config:sub(1,1) == "/" or package.config:sub(1,1) == "\\")
-
-  -- —-- path helpers —--
-  ok("NormalizePath empty", normalizePath("") == "")
-  ok("NormalizePath plain", normalizePath("a/b") == (IS_WINDOWS and "a\\b" or "a/b"))
-  local s = getPathSeparator()
-  ok("GetPathSep matches IS_WINDOWS", (IS_WINDOWS and s == "\\") or (not IS_WINDOWS and s == "/"))
-  ok("BuildFramePath png", buildFramePath("/p","/f",5,".png",true) == "/p_0005.png")
-  ok("BuildFramePath enc", buildFramePath("/p","/f",5,".png",false) == "/f" .. s .. "0005.png")
-
-  -- —-- getFrameWidth —--
-  ok("getFrameWidth 0", getFrameWidth(0) == 4)    -- minimum 4
-  ok("getFrameWidth 1", getFrameWidth(1) == 4)    -- minimum 4
-  ok("getFrameWidth 9999", getFrameWidth(9999) == 4)  -- still 4 digits
-  ok("getFrameWidth 10000", getFrameWidth(10000) == 5) -- 5 digits
-  ok("getFrameWidth 99999", getFrameWidth(99999) == 5)
-  ok("getFrameWidth 100000", getFrameWidth(100000) == 6)
-
-  -- —-- buildFramePath with custom width —--
-  ok("BuildFramePath width 5", buildFramePath("/p","/f",5,".png",true,5) == "/p_00005.png")
-  ok("BuildFramePath width 6", buildFramePath("/p","/f",100000,".png",false,6) == "/f" .. s .. "100000.png")
-
-  -- —-- IsValidShellPath —--
-  ok("Valid nil", not isValidShellPath(nil))
-  ok("Valid empty", not isValidShellPath(""))
-  ok("Valid path", isValidShellPath("/home/user/file.png"))
-  ok("Invalid $", not isValidShellPath("$(whoami)"))
-  ok("Invalid backtick", not isValidShellPath("`id`"))
-  ok("Invalid |", not isValidShellPath("x|y"))
-  ok("Invalid ;", not isValidShellPath("x;y"))
-  ok("Invalid \\n", not isValidShellPath("a\nb"))
-  ok("Invalid backslash", not isValidShellPath("a\\b"))
-  ok("Invalid double-quote", not isValidShellPath('a"b'))
-  ok("Invalid bang", not isValidShellPath("a!b"))
-  ok("Invalid ampersand", not isValidShellPath("a&b"))
-
-  -- —-- codec helpers —--
-  ok("TwoPass h264", isTwoPassCodec("h264"))
-  ok("TwoPass vp9", isTwoPassCodec("vp9"))
-  ok("TwoPass prores (false)", not isTwoPassCodec("prores"))
-  ok("AV1 family av1", isAv1FamilyCodec("av1"))
-  ok("AV1 family avif", isAv1FamilyCodec("avif"))
-  ok("AV1 family h264 (false)", not isAv1FamilyCodec("h264"))
-  ok("Encoder default extraction", ("ffmpeg -c:v libaom-av1 out.mp4"):match("%-c:v%s+(%S+)") == "libaom-av1")
-  ok("Encoder template replacement",
-    replaceEncoderInCommandTemplate("ffmpeg -c:v libaom-av1 out.mp4", "libsvtav1"):find("-c:v libsvtav1", 1, true) ~= nil)
-  ok("AV1 libaom preset arg", getAv1PresetArgForEncoder("libaom-av1", 2, "medium") == "-cpu-used 2")
-  ok("AV1 libsvt preset arg", getAv1PresetArgForEncoder("libsvtav1", 2, "medium") == "-preset 2")
-  ok("AV1 rav1e preset arg", getAv1PresetArgForEncoder("librav1e", 2, "medium") == "-speed 2")
-
-  -- —-- image dimension helpers —--
-  local dimW, dimH = getImageDimensions({ OriginalWidth = 1920, OriginalHeight = 1080, Width = 960, Height = 540 })
-  ok("Image dimensions prefer original", dimW == 1920 and dimH == 1080)
-  dimW, dimH = getImageDimensions({ OriginalWidth = 0, OriginalHeight = 0, Width = 960, Height = 540 })
-  ok("Image dimensions fallback to current", dimW == 960 and dimH == 540)
-  dimW, dimH = getImageDimensions({ Value = { OriginalWidth = 1280, OriginalHeight = 720, Width = 640, Height = 360 } })
-  ok("Image dimensions unwrap value", dimW == 1280 and dimH == 720)
-
-  -- —-- splitBaseAndExt —--
-  local b_, e_ = splitBaseAndExtension("/a/b.mp4")
-  ok("splitBaseAndExt mp4", b_ == "/a/b" and e_ == ".mp4")
-  local b0, e0 = splitBaseAndExtension("noext")
-  ok("splitBaseAndExt noext", b0 == "noext" and e0 == ".png")
-  local b1, e1 = splitBaseAndExtension(".hidden")
-  ok("splitBaseAndExt .hidden", b1 == "" and e1 == ".hidden")
-  local b2, e2 = splitBaseAndExtension("file.")
-  ok("splitBaseAndExt trailing dot (no ext)", b2 == "file" and e2 == ".png")
-  local b3, e3 = splitBaseAndExtension("a.tar.gz")
-  ok("splitBaseAndExt double ext", b3 == "a.tar" and e3 == ".gz")
-
-  -- —-- shouldShowSliderForPreset —--
-  local h264 = {codec="h264"}
-  local gif = {codec="gif"}
-  ok("Slider CRF h264", shouldShowSliderForPreset("CRF", h264))
-  ok("Slider CRF gif (false)", not shouldShowSliderForPreset("CRF", gif))
-  ok("Slider MaxRate h264", shouldShowSliderForPreset("MaxRateMbps", h264))
-  ok("Slider MaxRate vp9 (false)", not shouldShowSliderForPreset("MaxRateMbps", {codec="vp9"}))
-  ok("Slider Keyframe gif (false)", not shouldShowSliderForPreset("KeyframeInterval", gif))
-
-  -- —-- slider token parsing —--
-  do
-    local t = {}
-    for n in string.gmatch("${S:CRF} and ${S:Width}", "%${S:([%a_][%w_]*)}") do t[n] = true end
-    ok("SliderTokens CRF+Width", t.CRF and t.Width and not t.Height)
-  end
-  do
-    local t = {}
-    for n in string.gmatch("${AlphaFlattenFilterArg} and ${S:CRF}", "%${S:([%a_][%w_]*)}") do t[n] = true end
-    if string.find("${AlphaFlattenFilterArg} and ${S:CRF}", "${AlphaFlattenFilterArg}", 1, true) then t.Width = true; t.Height = true end
-    ok("SliderTokens filter token", t.Width and t.Height)
-  end
-  do
-    local t = {}
-    for n in string.gmatch("no tokens here", "%${S:([%a_][%w_]*)}") do t[n] = true end
-    ok("SliderTokens none", next(t) == nil)
-  end
-
-  -- —-- IsValidShellPath extras —--
-  ok("Valid \\r (rejected)", not isValidShellPath("a\rb"))
-  ok("Valid unicode", isValidShellPath("/home/user/café.mp4"))
-  ok("Valid long", isValidShellPath(string.rep("/a", 500)))
-  ok("Invalid only meta", not isValidShellPath("$(`;)"))
-  ok("Valid empty segment path", isValidShellPath("//a//b//c"))
-  ok("Valid dot path", isValidShellPath("."))
-  if IS_WINDOWS then ok("Invalid % on Windows", not isValidShellPath("a%b")) end
-
-  -- —-- NormalizePath extras —--
-  if not IS_WINDOWS then
-    ok("NormalizePath doubleslash", normalizePath("a//b") == "a//b")
-    ok("NormalizePath trailing", normalizePath("a/b/") == "a/b/")
-  end
-
-  -- —-- decodeJson —--
-  local jval, jerr = decodeJson('{"x":1}')
-  ok("decodeJson valid", jval ~= nil and jval.x == 1)
-  local jbad, jbaderr = decodeJson("{bad}")
-  ok("decodeJson invalid", jbad == nil and jbaderr ~= nil, tostring(jbaderr))
-
-  -- —-- shell smoke tests —--
-  local ep = runProcessCommand(IS_WINDOWS and "cmd /c echo hello" or "echo hello", {blocking=true})
-  if ep then
-    local eo = ep:read("*a"):gsub("%s+$","")
-    ok("RunCommand echo", eo == "hello")
-    ep:close()
-  else
-    ok("RunCommand echo", false, "spawn failed")
-  end
-
-  local wo, woExit = runCommandFullBlocking(IS_WINDOWS and "cmd /c echo ok" or "echo ok")
-  ok("RunFullBlocking output", wo and wo:find("ok",1,true) ~= nil)
-  ok("RunFullBlocking exit code 0", woExit == 0,
-    "expected 0, got " .. tostring(woExit))
-
-  -- Verify false command exits non-zero (shell returns 127 for "not found")
-  local badOut, badExit = runCommandFullBlocking(IS_WINDOWS and "cmd /c nonexistent_cmd_xyz" or "nonexistent_cmd_xyz")
-  ok("RunFullBlocking false command produces output", badOut ~= nil,
-    "got nil (spawn failure), expected output string with exit code")
-  if badOut ~= nil then
-    ok("RunFullBlocking false command non-zero exit", badExit ~= 0,
-      "expected non-zero, got " .. tostring(badExit) .. " output: " .. badOut:sub(1,80))
-  end
-
-  local lines = {}
-  local st = runCommandPerLineBlocking(
-    IS_WINDOWS and "echo L1 & echo L2" or "printf 'L1\\nL2\\n'",
-    function(l) table.insert(lines,l) end)
-  if st then while st() do end end
-  ok("RunPerLine count", #lines == 2)
-  if #lines == 2 then
-    local l1 = lines[1]:gsub("^%s*(.-)%s*$", "%1")
-    local l2 = lines[2]:gsub("^%s*(.-)%s*$", "%1")
-    ok("RunPerLine L1", l1 == "L1")
-    ok("RunPerLine L2", l2 == "L2")
-  end
-
-  -- —-- Pipe:read(n) —--
-  local pp = runProcessCommand(IS_WINDOWS and "cmd /c echo abcd" or "echo abcd", {blocking=false})
-  if pp then
-    local c1 = pp:read(2); local c2 = pp:read(2)
-    ok("Pipe:read(2)", c1 ~= nil and c2 ~= nil and #c1 == 2 and #c2 == 2)
-    pp:close()
-  end
-
-  -- —-- RemoveDirectory —--
-  local tmpDir = (IS_WINDOWS and (os.getenv("TEMP") or "C:\\Windows\\Temp") or "/tmp") .. getPathSeparator() .. "ffmpeg_saver_testdir"
-  runCommandFullBlocking(IS_WINDOWS and string.format('rd /s /q "%s" 2>nul', tmpDir) or string.format('rm -rf "%s"', tmpDir))
-  runCommandFullBlocking(IS_WINDOWS and string.format('if not exist "%s" mkdir "%s"', tmpDir, tmpDir) or string.format('mkdir -p "%s"', tmpDir))
-  local existsOut = runCommandFullBlocking(IS_WINDOWS and string.format('if exist "%s\\" echo 1', tmpDir) or string.format('test -d "%s" && echo 1', tmpDir)) or ""
-  if existsOut:find("1") then
-    removeDirectory(tmpDir)
-    local gone = runCommandFullBlocking(IS_WINDOWS and string.format('if exist "%s\\" echo 1', tmpDir) or string.format('test -d "%s" && echo 1', tmpDir)) or ""
-    ok("RemoveDirectory", not gone:find("1"), "dir still exists after removal")
-  else
-    ok("RemoveDirectory", false, "could not create test dir: " .. tmpDir)
-  end
-
-  -- —-- findFfmpegPath —--
-  local fp = findFfmpegPath()
-  if fp then
-    fuseLog("[info] FFmpeg found:", fp)
-    local v = runCommandFullBlocking('"'..fp..'" -version 2>&1') or ""
-    ok("ffmpeg works", v:lower():find("ffmpeg") ~= nil, fp)
-  else
-    fuseLog("[info] FFmpeg not found (OK)")
-  end
-
-  -- —-- error functions —--
-  local ca = pcall(function() fuseError("intentional") end)
-  ok("fuseError throws", not ca)
-  local ca2 = pcall(function() fuseAssert(1==2,"fail") end)
-  ok("fuseAssert false throws", not ca2)
-
-  -- —-- data integrity —--
-  ok("PRESETS count", #PRESET_DEFINITIONS == 11)
-  ok("SLIDER_REG CRF", SLIDER_REGISTRY.CRF ~= nil)
-  ok("RATE_CTRL count", #RATE_CONTROL_MODE_OPTIONS == 3)
-  ok("H264_PRESET count", #H264_PRESET_OPTIONS == 9)
-  ok("PRORES count", #PRORES_PROFILE_OPTIONS == 6)
-  ok("Parallel array AV1_SIZE", #AV1_PRESET_VALUES == #H264_PRESET_OPTIONS,
-    "AV1 ("..#AV1_PRESET_VALUES..") vs H264 ("..#H264_PRESET_OPTIONS..")")
-  ok("Parallel array VP9_SIZE", #VP9_CPU_USED_VALUES == #H264_PRESET_OPTIONS,
-    "VP9 ("..#VP9_CPU_USED_VALUES..") vs H264 ("..#H264_PRESET_OPTIONS..")")
-
-  -- —-- getPresetDefinitionByIndex —--
-  local p1 = getPresetDefinitionByIndex(1)
-  ok("preset index 1 codec", p1 and p1.codec == "h264")
-  local p9 = getPresetDefinitionByIndex(9)
-  ok("preset index 9 codec", p9 and p9.codec == "avif")
-
-  local p999 = getPresetDefinitionByIndex(999)
-  ok("preset index out-of-bounds returns first", p999 and p999.codec == "h264")
-
-  -- —-- buildProgressHtml edge cases —--
-  local bp0 = buildProgressHtml(0, 0, 0)
-  ok("buildProgressHtml 0/0", bp0 and #bp0 > 0 and bp0:find("0%%") ~= nil)
-  local bp1 = buildProgressHtml(1, 10, 10)
-  ok("buildProgressHtml complete", bp1 and bp1:find("Frame 10 / 10") ~= nil)
-  local bpHalf = buildProgressHtml(0.5, nil, nil, "encoding")
-  ok("buildProgressHtml status text", bpHalf and bpHalf:find("encoding") ~= nil)
-  local bpClamp = buildProgressHtml(-0.1, 0, 0)
-  ok("buildProgressHtml negative clamp", bpClamp and bpClamp:find("0%%") ~= nil)
-
-  -- —-- shouldShowSliderForPreset unknown token —--
-  ok("Slider unknown token returns true", shouldShowSliderForPreset("BogusToken", {codec="h264"}))
-  ok("Slider unknown token prores", shouldShowSliderForPreset("BogusToken", {codec="prores"}))
-
-  -- —-- decodeJson edge cases —--
-  local jnil, jnilErr = decodeJson(nil)
-  ok("decodeJson nil fails", jnil == nil and jnilErr ~= nil, tostring(jnilErr))
-  local jempty, jemptyErr = decodeJson("")
-  ok("decodeJson empty fails", jempty == nil and jemptyErr ~= nil, tostring(jemptyErr))
-  local jws, jwsErr = decodeJson("   ")
-  ok("decodeJson whitespace fails", jws == nil and jwsErr ~= nil, tostring(jwsErr))
-
-  -- —-- Sleep smoke test (must not crash) —--
-  local sleepOk = pcall(sleep, 0)
-  ok("Sleep(0) no crash", sleepOk)
-
-  -- —-- RunPerLineBlocking with no output —--
-  local noOutLines = {}
-  local noOutStep = runCommandPerLineBlocking(
-    IS_WINDOWS and "cd ." or "true",
-    function(l) table.insert(noOutLines, l) end)
-  if noOutStep then while noOutStep() do end end
-  ok("RunPerLineBlocking no output = 0 lines", #noOutLines == 0,
-    "got " .. #noOutLines .. " lines")
-
-  -- —-- Pipe:read("*a") after partial read —--
-  local pp2 = runProcessCommand(IS_WINDOWS and "cmd /c echo 1234567890" or "echo 1234567890", {blocking=false})
-  if pp2 then
-    local c3 = pp2:read(5)
-    local rest = pp2:read("*a")
-    rest = rest and rest:gsub("%s+$","") or ""
-    ok("Pipe:read(5) then read(*a)", c3 ~= nil and #c3 == 5 and rest ~= nil and #rest > 0,
-      "first 5: '" .. tostring(c3) .. "', rest: '" .. tostring(rest) .. "'")
-    pp2:close()
-  end
-
-  ok("SLIDER_TOKEN_MAP table", type(sliderTokenMap) == "table")
-
-  fuseLog(string.format("========== SELF-TEST END: %d/%d passed ==========", p, p+f))
-  if f > 0 then fuseLog("SELF-TEST FAILED:", f, "tests") end
-end
-
