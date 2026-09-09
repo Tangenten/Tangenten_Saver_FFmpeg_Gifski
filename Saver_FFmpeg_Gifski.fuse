@@ -51,7 +51,7 @@ if RUNNING_IN_FUSION then
     REG_NoScriptCtrls     = false,
     REG_NoCommonCtrls     = false,
 
-    REG_NoPreCalcProcess  = false,
+    REG_NoPreCalcProcess  = true,
 
     REG_Fuse_NoReload     = true,
     REG_Fuse_NoEdit       = true,
@@ -62,10 +62,13 @@ end
 
 -- region FFI subprocess & platform layer
 
-local ffi              = require("ffi")
+-- Resolve may expose Lua libraries only after Fuse registration.
+-- Keep FFI/module loading out of the registration-time chunk.
+local ffiReady = false
+
 
 local PLUGIN_NAME      = "Saver (FFmpeg & Gifski)"
-local PLUGIN_VERSION   = "1.0.0"
+local PLUGIN_VERSION   = "1.0.1"
 
 local FUSE_LOG_ENABLED = false
 
@@ -78,15 +81,37 @@ end
 -- FFI & cross-platform subprocess execution
 -- ============================================================================
 
-local IS_WINDOWS = package.config:sub(1, 1) == "\\"
-
--- Platform-specific FFI backends ----
-
+local IS_WINDOWS
 local _K32, _libc
 local _WIFEXITED, _WEXITSTATUS, _WNOHANG
+-- Forward declarations keep the helper functions defined when FFI is absent.
+local zlib
+local PNG_CRC_TABLE
+local DEFL_LIT_CODE
+local DEFL_LIT_BITS
+local DEFL_DIST_CODE
+local DEFL_LEN_SYM
+local DEFL_HASH
 
-if IS_WINDOWS then
-  ffi.cdef [[
+local DEFL_LEN_BASE   = { 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258 }
+local DEFL_LEN_EXTRA  = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 }
+local DEFL_DIST_BASE  = { 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 }
+local DEFL_DIST_EXTRA = { 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 }
+
+local function ensureFfiRuntime()
+  if ffiReady then return true end
+
+  -- `ffi`, `bit`, `require`, and `package` can be unavailable while Resolve
+  -- is registering the Fuse. Resolve them lazily when the lifecycle starts.
+  if ffi == nil and require then ffi = require("ffi") end
+  if bit == nil and require then bit = require("bit") end
+  if type(ffi) ~= "table" or type(bit) ~= "table" then return false end
+
+  IS_WINDOWS = package and package.config and package.config:sub(1, 1) == "\\" or false
+
+  -- Platform-specific FFI backends.
+  if IS_WINDOWS then
+    ffi.cdef [[
     typedef void* HANDLE;
     typedef unsigned long DWORD;
     typedef int BOOL;
@@ -129,11 +154,11 @@ if IS_WINDOWS then
     HANDLE GetStdHandle(DWORD nStdHandle);
     void Sleep(DWORD dwMilliseconds);
     int CreateDirectoryA(const char* lpPathName, void* lpSecurityAttributes);
-  ]]
+    ]]
 
-  _K32 = ffi.load("kernel32")
-else
-  ffi.cdef [[
+    _K32 = ffi.load("kernel32")
+  else
+    ffi.cdef [[
     typedef int pid_t;
     int pipe(int pipefd[2]);
     pid_t fork(void);
@@ -145,12 +170,93 @@ else
     pid_t waitpid(pid_t pid, int *status, int options);
     int usleep(unsigned long usec);
     int mkdir(const char *pathname, unsigned int mode);
+    ]]
+
+    _libc        = ffi.C
+    _WNOHANG     = 1
+    _WIFEXITED   = function(s) return bit.band(s, 0x7f) == 0 end
+    _WEXITSTATUS = function(s) return bit.rshift(bit.band(s, 0xff00), 8) end
+  end
+
+  -- zlib FFI: native DEFLATE (~50x faster than pure Lua). Cross-platform
+  -- library names fall back gracefully when zlib is not installed.
+  ffi.cdef [[
+    unsigned long compressBound(unsigned long sourceLen);
+    int compress2(unsigned char *dest, unsigned long *destLen,
+                  const unsigned char *source, unsigned long sourceLen, int level);
   ]]
 
-  _libc        = ffi.C
-  _WNOHANG     = 1
-  _WIFEXITED   = function(s) return bit.band(s, 0x7f) == 0 end
-  _WEXITSTATUS = function(s) return bit.rshift(bit.band(s, 0xff00), 8) end
+  do
+    local ok
+    if IS_WINDOWS then
+      ok, zlib = pcall(ffi.load, "zlib1")
+      if not ok then ok, zlib = pcall(ffi.load, "zlibwapi") end
+      if not ok then ok, zlib = pcall(ffi.load, "zlib") end
+      if not ok then zlib = nil end
+    else
+      ok, zlib = pcall(ffi.load, "z")
+      if not ok then ok, zlib = pcall(ffi.load, "libz") end
+      if not ok then zlib = nil end
+    end
+  end
+
+  -- CRC-32 table (standard PNG polynomial).
+  PNG_CRC_TABLE = ffi.new("uint32_t[256]")
+  for n = 0, 255 do
+    local c = n
+    for _ = 1, 8 do
+      c = bit.band(c, 1) == 1 and bit.bxor(0xEDB88320, bit.rshift(c, 1)) or bit.rshift(c, 1)
+    end
+    PNG_CRC_TABLE[n] = c
+  end
+
+  -- Fixed-Huffman DEFLATE tables.
+  DEFL_LIT_CODE = ffi.new("uint16_t[288]")
+  DEFL_LIT_BITS = ffi.new("uint8_t[288]")
+  DEFL_DIST_CODE = ffi.new("uint8_t[30]")
+  DEFL_LEN_SYM = ffi.new("uint8_t[259]")
+
+  do
+    local function reverseBits(v, bits)
+      local r = 0
+      for _ = 1, bits do
+        r = bit.bor(bit.lshift(r, 1), bit.band(v, 1))
+        v = bit.rshift(v, 1)
+      end
+      return r
+    end
+
+    for sym = 0, 287 do
+      local code, bits
+      if sym <= 143 then
+        code, bits = 0x30 + sym, 8
+      elseif sym <= 255 then
+        code, bits = 0x190 + sym - 144, 9
+      elseif sym <= 279 then
+        code, bits = sym - 256, 7
+      else
+        code, bits = 0xC0 + sym - 280, 8
+      end
+      DEFL_LIT_CODE[sym] = reverseBits(code, bits)
+      DEFL_LIT_BITS[sym] = bits
+    end
+
+    for sym = 0, 29 do
+      DEFL_DIST_CODE[sym] = reverseBits(sym, 5)
+    end
+
+    local sym = 0
+    for len = 3, 258 do
+      while sym < 28 and len >= DEFL_LEN_BASE[sym + 2] do
+        sym = sym + 1
+      end
+      DEFL_LEN_SYM[len] = sym
+    end
+  end
+
+  DEFL_HASH = ffi.new("int32_t[?]", 0x8000)
+  ffiReady = true
+  return true
 end
 
 ----------------------------------------------------------------
@@ -330,12 +436,58 @@ end
 -- Get file size in MB as a formatted string (e.g. "12.3 MB").
 -- Returns nil if the file does not exist.
 local function getFileSizeMB(path)
-  local f = io.open(path, "r")
+  local f = io.open(path, "rb")
   if not f then return nil end
   local size = f:seek("end")
   f:close()
   if not size or size <= 0 then return nil end
   return string.format("%.1f MB", size / (1024 * 1024))
+end
+
+local function getFileSizeBytes(path)
+  local f = io.open(path, "rb")
+  if not f then return nil end
+  local size = f:seek("end")
+  f:close()
+  return size
+end
+
+local function escapeHtml(text)
+  return tostring(text):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;")
+end
+
+local function getCommandDiagnostic(output)
+  if not output or output == "" then return "FFmpeg provided no diagnostic." end
+
+  local lines = {}
+  for line in output:gmatch("[^\r\n]+") do
+    line = line:gsub("^%s+", ""):gsub("%s+$", "")
+    if line ~= "" and not line:match("^frame=") then
+      lines[#lines + 1] = line
+    end
+  end
+  if #lines == 0 then return "FFmpeg provided no diagnostic." end
+
+  -- FFmpeg ends failures with the unhelpful "Conversion failed!".  The cause
+  -- is normally in the few lines immediately before it (encoder/filter/path).
+  local firstLine = math.max(1, #lines - 3)
+  local diagnostic = table.concat(lines, " | ", firstLine)
+  if #diagnostic > 520 then diagnostic = diagnostic:sub(-520) end
+  return diagnostic
+end
+
+local function logFfmpegFailure(command, exitCode, output)
+  print("[FFMPEGSaver] FFmpeg failed with exit " .. tostring(exitCode) .. ": " .. command)
+  if output and output ~= "" then
+    print("[FFMPEGSaver] FFmpeg output:\n" .. output)
+  end
+end
+
+local function showExportError(message)
+  if not InExportingLabel then return end
+  InExportingLabel:SetAttrs({
+    LINKS_Name = "<center><span style='color:#d96b6b;'>" .. escapeHtml(message) .. "</span></center>",
+  })
 end
 
 -- Check whether a cancel has been requested.  Uses two independent mechanisms
@@ -355,7 +507,10 @@ local function refreshOutputFileSize(basePath, ext)
   local outputFile = basePath .. ext
   local sizeStr = getFileSizeMB(outputFile)
   if sizeStr then
-    InExportingLabel:SetAttrs({ LINKS_Name = "<center><span style='color:#b0b8c0;'>Output size: <b>" .. sizeStr .. "</b></span></center>" })
+    InExportingLabel:SetAttrs({
+      LINKS_Name = "<center><span style='color:#b0b8c0;'>Output size: <b>" ..
+          sizeStr .. "</b></span></center>"
+    })
   else
     InExportingLabel:SetAttrs({ LINKS_Name = "<center><span style='color:#8a94a0;'>Output size: —</span></center>" })
   end
@@ -1011,6 +1166,25 @@ local function getScaledInputDimensions(req)
   return widthValue, heightValue
 end
 
+local function makeDimensionsCompatibleWithPixelFormat(widthValue, heightValue, pixelFormat)
+  local requiresEvenWidth = pixelFormat == "yuv420p" or pixelFormat == "yuv422p"
+  local requiresEvenHeight = pixelFormat == "yuv420p"
+  local originalWidth, originalHeight = widthValue, heightValue
+
+  if requiresEvenWidth and widthValue > 1 and widthValue % 2 ~= 0 then
+    widthValue = widthValue - 1
+  end
+  if requiresEvenHeight and heightValue > 1 and heightValue % 2 ~= 0 then
+    heightValue = heightValue - 1
+  end
+
+  if widthValue ~= originalWidth or heightValue ~= originalHeight then
+    fuseLog(string.format("[buildResolvedCommand] Adjusted %dx%d to %dx%d for %s", originalWidth, originalHeight,
+      widthValue, heightValue, pixelFormat))
+  end
+  return widthValue, heightValue
+end
+
 local function shouldShowSliderForPreset(tokenName, presetDefinition)
   local codecName = presetDefinition.codec or "h264"
 
@@ -1256,6 +1430,7 @@ local function buildTerminalCommand(comp, req, startFrame, endFrame, basePath, f
   end
 
   local scaleFilter = ""
+  widthValue, heightValue = makeDimensionsCompatibleWithPixelFormat(widthValue, heightValue, pixelFormatValue)
   if widthValue > 0 or heightValue > 0 then
     scaleFilter = string.format('-vf "scale=%d:%d:flags=lanczos"', widthValue, heightValue)
   end
@@ -1609,40 +1784,6 @@ end
 -- to disk.
 -- ============================================================================
 
--- zlib FFI: native DEFLATE (~50x faster than pure Lua). Cross-platform
--- library names — falls back gracefully when zlib is not installed.
-ffi.cdef [[
-  unsigned long compressBound(unsigned long sourceLen);
-  int compress2(unsigned char *dest, unsigned long *destLen,
-                const unsigned char *source, unsigned long sourceLen, int level);
-]]
-
-local zlib
-
-do
-  local ok
-  if IS_WINDOWS then
-    ok, zlib = pcall(ffi.load, "zlib1")
-    if not ok then ok, zlib = pcall(ffi.load, "zlibwapi") end
-    if not ok then ok, zlib = pcall(ffi.load, "zlib") end
-    if not ok then zlib = nil end
-  else
-    ok, zlib = pcall(ffi.load, "z")
-    if not ok then ok, zlib = pcall(ffi.load, "libz") end
-    if not ok then zlib = nil end
-  end
-end
-
--- CRC-32 table (standard PNG polynomial)
-local PNG_CRC_TABLE = ffi.new("uint32_t[256]")
-for n = 0, 255 do
-  local c = n
-  for _ = 1, 8 do
-    c = bit.band(c, 1) == 1 and bit.bxor(0xEDB88320, bit.rshift(c, 1)) or bit.rshift(c, 1)
-  end
-  PNG_CRC_TABLE[n] = c
-end
-
 local function pngU32(v)
   return string.char(
     math.floor(v / 16777216) % 256,
@@ -1663,57 +1804,6 @@ local function pngChunk(chunkType, chunkData)
   if c < 0 then c = c + 4294967296 end
   return pngU32(#chunkData) .. full .. pngU32(c)
 end
-
--- Fixed-Huffman DEFLATE tables (one final block, greedy LZ77 with 32K window).
--- Inlined from PhysicsBox/Modules/Deflate.lua for zero-dependency encoding.
-local DEFL_LIT_CODE   = ffi.new("uint16_t[288]")
-local DEFL_LIT_BITS   = ffi.new("uint8_t[288]")
-local DEFL_DIST_CODE  = ffi.new("uint8_t[30]")
-local DEFL_LEN_SYM    = ffi.new("uint8_t[259]")
-local DEFL_LEN_BASE   = { 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258 }
-local DEFL_LEN_EXTRA  = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 }
-local DEFL_DIST_BASE  = { 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 }
-local DEFL_DIST_EXTRA = { 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 }
-
-do
-  local function reverseBits(v, bits)
-    local r = 0
-    for _ = 1, bits do
-      r = bit.bor(bit.lshift(r, 1), bit.band(v, 1))
-      v = bit.rshift(v, 1)
-    end
-    return r
-  end
-
-  for sym = 0, 287 do
-    local code, bits
-    if sym <= 143 then
-      code, bits = 0x30 + sym, 8
-    elseif sym <= 255 then
-      code, bits = 0x190 + sym - 144, 9
-    elseif sym <= 279 then
-      code, bits = sym - 256, 7
-    else
-      code, bits = 0xC0 + sym - 280, 8
-    end
-    DEFL_LIT_CODE[sym] = reverseBits(code, bits)
-    DEFL_LIT_BITS[sym] = bits
-  end
-
-  for sym = 0, 29 do
-    DEFL_DIST_CODE[sym] = reverseBits(sym, 5)
-  end
-
-  local sym = 0
-  for len = 3, 258 do
-    while sym < 28 and len >= DEFL_LEN_BASE[sym + 2] do
-      sym = sym + 1
-    end
-    DEFL_LEN_SYM[len] = sym
-  end
-end
-
-local DEFL_HASH = ffi.new("int32_t[?]", 0x8000)
 
 -- Pure-Lua fallback: compress `data` (uint8_t* cdata) of `n` bytes.
 -- Returns raw deflate stream (no zlib header/checksum).
@@ -2216,7 +2306,7 @@ local function renderImageSequenceAndEncode(req, resources)
     if ffmpegOutput == nil then
       fuseLog("[render] [ERROR] ffmpeg main encode failed to start (command: " .. ffmpegCommand:sub(1, 200) .. ")")
       InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, totalFrames, "ERROR: Encode failed to start") })
-      return
+      return false, "FFmpeg could not start."
     end
     if ffmpegExitCode ~= 0 then
       fuseLog("[render] [ERROR] ffmpeg main encode exited with code", ffmpegExitCode)
@@ -2230,7 +2320,17 @@ local function renderImageSequenceAndEncode(req, resources)
           "ERROR: Encode failed (exit " .. ffmpegExitCode .. ")")
       })
 
-      return -- don't report success
+      logFfmpegFailure(ffmpegCommand, ffmpegExitCode, ffmpegOutput)
+      return false, "FFmpeg failed (exit " .. ffmpegExitCode .. "): " .. getCommandDiagnostic(ffmpegOutput)
+    end
+
+    local outputFile = basePath .. presetDefinition.outputExtension
+    local outputSize = getFileSizeBytes(outputFile)
+    if not outputSize or outputSize <= 0 then
+      InProgressBar:SetAttrs({
+        LINKS_Name = buildProgressHtml(0, 0, totalFrames, "ERROR: Empty output file")
+      })
+      return false, "FFmpeg completed without producing a valid output file."
     end
 
     InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(1, totalFrames, totalFrames, "Done.") })
@@ -2243,6 +2343,7 @@ end
 -- ============================================================================
 
 function Create()
+  if not ensureFfiRuntime() then return end
   self:RemoveControlPage("Controls")
   local controlsPage = self:AddControlPage("Controls", { CTID_DIB_ID = 'Icons.Tools.Tabs.Image' })
 
@@ -3174,6 +3275,7 @@ end
 -- ============================================================================
 
 function OnAddToFlow()
+  if not ensureFfiRuntime() then return end
   -- Auto-fill frame rate: if the slider is 0, default to comp frame rate
   if InFramerate then
     local currentFps = getCompFrameRate(self.Comp)
@@ -3229,6 +3331,7 @@ function OnAddToFlow()
 end
 
 function NotifyChanged(inp, param, time)
+  if not ensureFfiRuntime() then return end
   if inp == InVersionFooter or inp == InLicenseFFmpeg or inp == InLicenseGifski then
     bmd.openurl(param.Value)
     inp:SetSource(Text(""), 0, 0)
@@ -3344,7 +3447,13 @@ function NotifyChanged(inp, param, time)
   end
 end
 
+function PreCalcProcess(req)
+  local img = InImage:GetValue(req)
+  OutImage:Set(req, img)
+end
+
 function Process(req)
+  if not ensureFfiRuntime() then return end
   local img = InImage:GetValue(req)
   OutImage:Set(req, img)
   if req:IsPreCalc() then return end
@@ -3368,27 +3477,30 @@ function Process(req)
     })
 
     local resources = {}
-    local ok, renderSucceeded = pcall(renderImageSequenceAndEncode, req, resources)
+    local ok, renderSucceeded, renderError = pcall(renderImageSequenceAndEncode, req, resources)
     if resources.frameFolder then removeDirectory(resources.frameFolder) end
     if not ok then
       fuseLog("[Process] render crashed:", tostring(renderSucceeded))
       InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, 0, "ERROR: Render crashed") })
+      showExportError("Export failed: " .. tostring(renderSucceeded))
     else
       if isCancelRequested(self, req) then
         InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, 0, "Cancelled.") })
       elseif renderSucceeded == true then
         InProgressBar:SetAttrs({ LINKS_Name = buildProgressHtml(0, 0, 0, "Ready.") })
+      elseif renderError then
+        showExportError(renderError)
       end
     end
 
     -- Refresh output status after export.
     local outputValue2 = InOutputPath:GetValue(req)
     local outputPath2 = outputValue2 and outputValue2.Value or ""
-    if outputPath2 ~= "" then
+    if renderSucceeded == true and outputPath2 ~= "" then
       local mappedPath2 = self.Comp and self.Comp:MapPath(outputPath2) or outputPath2
       local basePath2 = splitBaseAndExtension(mappedPath2)
       refreshOutputFileSize(basePath2, getPresetDefinition(req).outputExtension)
-    else
+    elseif outputPath2 == "" then
       InExportingLabel:SetAttrs({ LINKS_Name = "<center><span style='color:#8a94a0;'>Output size: —</span></center>" })
     end
 
